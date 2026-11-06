@@ -1,0 +1,3567 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Total Inventory - Install Team</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Google Font: Inter & Roboto Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto+Mono:wght@500;600&display=swap" rel="stylesheet">
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest" crossorigin="anonymous"></script>
+
+  <!-- Firebase Cloud Sync SDKs -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+    import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+    import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+    // =========================================================================
+    // PASTE YOUR FIREBASE CONFIGURATION HERE FOR GOOGLE SITES & EXTERNAL HOSTING
+    // (From Firebase Console -> Project Settings -> General -> Your Apps)
+    // Note: Registering your app as 'install-inventory' works seamlessly!
+    // =========================================================================
+    const CUSTOM_FIREBASE_CONFIG = {
+      apiKey: "AIzaSyAm3UGlsEVs95lklBLRkMght47gbncIEyc",
+      authDomain: "install-inventory.firebaseapp.com",
+      projectId: "install-inventory",
+      storageBucket: "install-inventory.firebasestorage.app",
+      messagingSenderId: "1056095228397",
+      appId: "1:1056095228397:web:f2ab308970ac22262397e4"
+    };
+
+    // Determine config: custom config when deployed, or environment config when in preview
+    const isCustomConfigSet = CUSTOM_FIREBASE_CONFIG && CUSTOM_FIREBASE_CONFIG.apiKey && CUSTOM_FIREBASE_CONFIG.apiKey.trim() !== "";
+    const activeFirebaseConfig = isCustomConfigSet 
+      ? CUSTOM_FIREBASE_CONFIG 
+      : (typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null);
+
+    // Use your project ID (or install-inventory) as the primary document namespace
+    const appId = (CUSTOM_FIREBASE_CONFIG && CUSTOM_FIREBASE_CONFIG.projectId) 
+      ? CUSTOM_FIREBASE_CONFIG.projectId 
+      : (typeof __app_id !== 'undefined' ? __app_id : 'install-inventory');
+
+    let cloudDb = null;
+    let cloudAuth = null;
+    let isCloudReady = false;
+
+    try {
+      if (activeFirebaseConfig) {
+        const fbApp = initializeApp(activeFirebaseConfig);
+        cloudDb = getFirestore(fbApp);
+        cloudAuth = getAuth(fbApp);
+
+        // Authenticate before query operations
+        const authPromise = (typeof __initial_auth_token !== 'undefined' && __initial_auth_token)
+          ? signInWithCustomToken(cloudAuth, __initial_auth_token)
+          : signInAnonymously(cloudAuth);
+
+        authPromise.then((cred) => {
+          isCloudReady = true;
+          window.isCloudReady = true;
+          window.cloudDb = cloudDb;
+          window.cloudAppId = appId;
+          window.cloudDocRef = doc(cloudDb, 'install_inventory_data', 'master_state');
+
+          const syncStatusText = document.getElementById('syncStatusText');
+          if (syncStatusText) syncStatusText.textContent = 'Cloud Active';
+
+          // Listen in real time for updates from phones or other laptops
+          onSnapshot(window.cloudDocRef, (snap) => {
+            if (snap.exists()) {
+              const data = snap.data();
+              if (data && data.updatedAt && (!window.lastCloudWriteTime || data.updatedAt > window.lastCloudWriteTime)) {
+                if (data.inventory) window.inventory = data.inventory;
+                if (data.sheetTitle) window.sheetTitle = data.sheetTitle;
+                if (data.columns) window.columns = data.columns;
+                if (data.checkOutColumns) window.checkOutColumns = data.checkOutColumns;
+                if (data.teamMembers) window.teamMembers = data.teamMembers;
+                if (data.auditLogs) window.auditLogs = data.auditLogs;
+                if (window.renderAll) window.renderAll();
+              }
+            }
+          }, (err) => {
+            console.warn("Cloud snapshot listening notice:", err);
+          });
+        }).catch(err => {
+          console.warn("Cloud auth notice (falling back to offline storage):", err);
+        });
+      }
+    } catch (e) {
+      console.warn("Cloud initialization skipped, utilizing local storage:", e);
+    }
+
+    // Expose cloud save helper to global scope
+    window.pushToCloud = async function(payload) {
+      if (!window.isCloudReady || !window.cloudDocRef) return;
+      try {
+        window.lastCloudWriteTime = Date.now();
+        await setDoc(window.cloudDocRef, {
+          ...payload,
+          updatedAt: window.lastCloudWriteTime
+        }, { merge: true });
+        const syncStatusText = document.getElementById('syncStatusText');
+        if (syncStatusText) {
+          syncStatusText.textContent = 'Cloud Synced';
+          setTimeout(() => { if (syncStatusText) syncStatusText.textContent = 'Cloud Active'; }, 1500);
+        }
+      } catch (err) {
+        console.warn("Cloud save error:", err);
+      }
+    };
+  </script>
+
+  <style>
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      -webkit-tap-highlight-color: transparent;
+      min-height: 100vh;
+    }
+    .font-mono-num {
+      font-family: 'Roboto Mono', monospace;
+    }
+    .sheet-cell {
+      border-right: 1px solid #e2e8f0;
+      border-bottom: 1px solid #e2e8f0;
+    }
+    .sheet-header-cell {
+      border-right: 1px solid #cbd5e1;
+      border-bottom: 1px solid #cbd5e1;
+      background: #f8fafc;
+      position: relative;
+    }
+    .resizer-handle {
+      position: absolute;
+      top: 0;
+      right: 0;
+      width: 6px;
+      cursor: col-resize;
+      user-select: none;
+      height: 100%;
+      background: transparent;
+      transition: background 0.15s ease;
+    }
+    .resizer-handle:hover,
+    .resizing {
+      background: #10b981;
+    }
+    .touch-btn {
+      touch-action: manipulation;
+      user-select: none;
+    }
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #f1f5f9;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #94a3b8;
+    }
+    .scrollbar-none::-webkit-scrollbar {
+      display: none;
+    }
+    .scrollbar-none {
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+    }
+  </style>
+</head>
+<body class="bg-slate-100 text-slate-800 flex flex-col min-h-screen">
+
+  <!-- ================= AUTHENTICATION GATEWAY ================= -->
+  <div id="authGate" class="fixed inset-0 z-50 bg-slate-900/90 backdrop-blur-md flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden border border-slate-200">
+      <div class="p-6 bg-gradient-to-br from-slate-900 via-slate-800 to-emerald-950 text-white text-center relative">
+        <div class="w-12 h-12 mx-auto rounded-xl bg-emerald-500/20 border border-emerald-400/30 flex items-center justify-center text-emerald-400 mb-3 shadow-lg">
+          <i data-lucide="shield-check" class="w-7 h-7"></i>
+        </div>
+        <h2 class="text-xl font-bold tracking-tight">Level99 Inventory Access</h2>
+        <p class="text-xs text-slate-300 mt-1">Authorized Install &amp; Field Operations Portal</p>
+        <div class="mt-2 inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-400/30">
+          <i data-lucide="lock" class="w-2.5 h-2.5 mr-1"></i> Domain Restricted (@level99.com)
+        </div>
+      </div>
+
+      <div class="p-6 space-y-4">
+        <div class="flex rounded-lg bg-slate-100 p-1 text-xs font-semibold">
+          <button id="authTabLogin" type="button" onclick="switchAuthMode('login')" class="flex-1 py-1.5 rounded-md bg-white text-slate-800 shadow-sm transition">Log In</button>
+          <button id="authTabSignup" type="button" onclick="switchAuthMode('signup')" class="flex-1 py-1.5 rounded-md text-slate-500 hover:text-slate-800 transition">Sign Up</button>
+        </div>
+
+        <form id="authForm" onsubmit="handleAuthSubmit(event)" class="space-y-3.5 text-xs">
+          <div>
+            <label class="block font-medium text-slate-700 mb-1">Company Email Address *</label>
+            <div class="relative">
+              <i data-lucide="mail" class="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5"></i>
+              <input type="email" id="authEmailInput" required placeholder="name@level99.com" class="w-full pl-9 pr-3 py-2 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+            </div>
+            <p class="text-[10px] text-slate-400 mt-1">Must be an active email ending with <strong>@level99.com</strong></p>
+          </div>
+
+          <div>
+            <label class="block font-medium text-slate-700 mb-1">Password *</label>
+            <div class="relative">
+              <i data-lucide="key" class="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5"></i>
+              <input type="password" id="authPasswordInput" required placeholder="••••" class="w-full pl-9 pr-3 py-2 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+            </div>
+            <p id="passwordHint" class="text-[10px] text-slate-400 mt-1 hidden">Minimum 4 digits / characters</p>
+          </div>
+
+          <!-- Remember Me Checkbox -->
+          <div class="flex items-center space-x-2 pt-1">
+            <input type="checkbox" id="rememberMeCheckbox" class="w-4 h-4 rounded text-emerald-600 border-slate-300 focus:ring-emerald-500 cursor-pointer">
+            <label for="rememberMeCheckbox" class="text-xs text-slate-600 select-none cursor-pointer">Remember me on this browser</label>
+          </div>
+
+          <div id="authAlertBox" class="hidden p-2.5 rounded-lg text-xs font-medium"></div>
+
+          <button type="submit" id="authSubmitBtn" class="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-lg shadow-sm transition flex items-center justify-center space-x-1.5">
+            <i data-lucide="log-in" class="w-3.5 h-3.5"></i>
+            <span id="authSubmitText">Log In</span>
+          </button>
+        </form>
+
+        <div class="pt-3 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-500">
+          <span>Need team credentials?</span>
+          <span class="text-slate-700 font-medium">Contact Install Lead</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= TOP NAVIGATION ================= -->
+  <header class="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-xs">
+    <div class="max-w-7xl mx-auto px-3 sm:px-6 py-2.5 flex flex-wrap items-center justify-between gap-2">
+      <div class="flex items-center space-x-2 sm:space-x-3">
+        <div class="flex items-center space-x-2">
+          <div class="p-1.5 bg-emerald-600 rounded-lg text-white shadow-xs shrink-0">
+            <i data-lucide="boxes" class="w-5 h-5"></i>
+          </div>
+          <div>
+            <div class="flex items-center space-x-1.5">
+              <h1 id="appTitleDisplay" class="font-bold text-slate-800 text-sm sm:text-base leading-tight truncate max-w-[150px] sm:max-w-xs">Total Inventory</h1>
+              <button onclick="editSheetTitle()" title="Rename Sheet" class="text-slate-400 hover:text-slate-700 p-0.5 rounded">
+                <i data-lucide="pencil" class="w-3.5 h-3.5"></i>
+              </button>
+            </div>
+            <p class="text-[10px] sm:text-[11px] text-slate-500 font-medium">Field Install Tracker</p>
+          </div>
+        </div>
+
+        <div class="hidden sm:flex items-center space-x-1 text-[11px] bg-slate-100 px-2 py-0.5 rounded-full text-slate-600 border border-slate-200">
+          <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+          <span id="syncStatusText">Live Sync</span>
+        </div>
+
+        <button onclick="openAuditModal()" title="View Version & Edit History" class="hidden sm:flex items-center space-x-1 text-[11px] font-medium bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1 rounded-md border border-slate-200 transition">
+          <i data-lucide="history" class="w-3.5 h-3.5 text-indigo-600"></i>
+          <span class="hidden md:inline">Version History</span>
+        </button>
+      </div>
+
+      <!-- Action Toolbar -->
+      <div class="flex items-center flex-wrap gap-1.5">
+        <button onclick="openEmailSaveModal()" class="flex items-center space-x-1 px-2.5 py-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg shadow-xs transition">
+          <i data-lucide="mail" class="w-3.5 h-3.5"></i>
+          <span class="hidden sm:inline">Save &amp; Email</span>
+        </button>
+
+        <button onclick="refreshApp()" title="Force Refresh Grid" class="p-1.5 text-slate-600 hover:bg-slate-100 rounded-lg border border-slate-200 transition">
+          <i data-lucide="rotate-cw" class="w-4 h-4"></i>
+        </button>
+
+        <!-- Desktop Action Buttons (Hidden on Mobile) -->
+        <div class="hidden md:flex items-center space-x-1.5">
+          <button onclick="openExportModal()" class="flex items-center space-x-1 px-2.5 py-1.5 text-xs font-medium bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-lg transition shadow-xs">
+            <i data-lucide="file-text" class="w-3.5 h-3.5 text-emerald-600"></i>
+            <span>Export Report</span>
+          </button>
+
+          <button id="hideNeverOosBtn" onclick="toggleHideNeverOos()" class="flex items-center space-x-1 px-2 py-1.5 text-xs font-medium bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-lg transition">
+            <i data-lucide="eye-off" class="w-3.5 h-3.5 text-sky-600"></i>
+            <span id="hideNeverOosText">Hide Non-Restock OOS</span>
+          </button>
+
+          <button id="toggleNotesBtn" onclick="toggleNotesColumn()" title="Toggle Notes Column Visibility" class="flex items-center space-x-1 px-2 py-1.5 text-xs font-medium bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-lg transition">
+            <i data-lucide="sticky-note" class="w-3.5 h-3.5 text-amber-600"></i>
+            <span id="toggleNotesText">Hide Notes</span>
+          </button>
+
+          <!-- Column Width Sliders Popover Trigger -->
+          <div class="relative">
+            <button onclick="toggleWidthSlidersPopover()" title="Adjust Column Widths" class="flex items-center space-x-1 px-2 py-1.5 text-xs font-medium bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-lg transition">
+              <i data-lucide="sliders-horizontal" class="w-3.5 h-3.5 text-emerald-600"></i>
+              <span>Widths</span>
+            </button>
+            
+            <div id="widthSlidersPopover" class="hidden absolute right-0 mt-2 w-72 bg-white rounded-xl shadow-xl border border-slate-200 z-50 p-3.5 space-y-3">
+              <div class="flex items-center justify-between border-b border-slate-100 pb-2">
+                <h4 class="font-bold text-xs text-slate-800">Column Width Adjustments</h4>
+                <button onclick="resetColumnWidths()" class="text-[10px] text-emerald-600 hover:underline font-semibold">Reset</button>
+              </div>
+              <div id="widthSlidersList" class="space-y-2.5 max-h-64 overflow-y-auto text-xs"></div>
+            </div>
+          </div>
+
+          <button onclick="openColumnSettingsModal()" class="flex items-center space-x-1 px-2 py-1.5 text-xs font-medium bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-lg transition">
+            <i data-lucide="columns" class="w-3.5 h-3.5 text-slate-500"></i>
+            <span>Columns</span>
+          </button>
+
+          <button onclick="openBackupModal()" title="Database Snapshot & Restore" class="p-1.5 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg transition">
+            <i data-lucide="database" class="w-4 h-4"></i>
+          </button>
+        </div>
+
+        <!-- Mobile "More Tools" Dropdown -->
+        <div class="relative md:hidden">
+          <button onclick="toggleMobileToolsMenu()" title="More Tools" class="p-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 rounded-lg flex items-center justify-center">
+            <i data-lucide="more-horizontal" class="w-4 h-4"></i>
+          </button>
+
+          <div id="mobileToolsMenu" class="hidden absolute right-0 mt-2 w-52 bg-white rounded-xl shadow-xl border border-slate-200 z-50 p-1.5 space-y-1 text-xs font-medium text-slate-700">
+            <button onclick="openAuditModal(); toggleMobileToolsMenu();" class="w-full flex items-center space-x-2 px-2.5 py-2 hover:bg-slate-50 rounded-lg text-left">
+              <i data-lucide="history" class="w-4 h-4 text-indigo-600"></i>
+              <span>Version History</span>
+            </button>
+            <button onclick="openExportModal(); toggleMobileToolsMenu();" class="w-full flex items-center space-x-2 px-2.5 py-2 hover:bg-slate-50 rounded-lg text-left">
+              <i data-lucide="file-text" class="w-4 h-4 text-emerald-600"></i>
+              <span>Export Report</span>
+            </button>
+            <button onclick="toggleHideNeverOos(); toggleMobileToolsMenu();" class="w-full flex items-center space-x-2 px-2.5 py-2 hover:bg-slate-50 rounded-lg text-left">
+              <i data-lucide="eye-off" class="w-4 h-4 text-sky-600"></i>
+              <span id="mobileHideNeverOosText">Hide Non-Restock OOS</span>
+            </button>
+            <button onclick="openBackupModal(); toggleMobileToolsMenu();" class="w-full flex items-center space-x-2 px-2.5 py-2 hover:bg-slate-50 rounded-lg text-left">
+              <i data-lucide="database" class="w-4 h-4 text-emerald-600"></i>
+              <span>Backup &amp; Restore</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="flex items-center pl-1 border-l border-slate-200 ml-0.5 sm:ml-1 space-x-1 sm:space-x-1.5">
+          <div class="px-1.5 sm:px-2 py-1 bg-slate-100 rounded-lg text-[11px] sm:text-xs font-mono font-medium text-slate-700 flex items-center space-x-1 max-w-[90px] sm:max-w-none truncate">
+            <i data-lucide="user" class="w-3.5 h-3.5 text-slate-500 shrink-0"></i>
+            <span id="currentUserBadge" class="truncate">@guest</span>
+          </div>
+          <button onclick="logoutUser()" title="Lock / Log Out" class="p-1 text-slate-400 hover:text-red-600 rounded transition">
+            <i data-lucide="log-out" class="w-3.5 h-3.5"></i>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- TABS BAR -->
+    <div class="max-w-7xl mx-auto px-3 sm:px-6 flex items-center justify-between border-t border-slate-200 bg-slate-50/70">
+      <div id="tabsContainer" class="flex items-center space-x-1.5 py-1.5 overflow-x-auto scrollbar-none flex-1 pr-2"></div>
+      <button onclick="openTabModal('create')" class="shrink-0 my-1 px-2.5 py-1 text-xs font-medium text-emerald-700 bg-emerald-100/70 hover:bg-emerald-200/80 rounded-md transition flex items-center space-x-1">
+        <i data-lucide="plus" class="w-3 h-3"></i>
+        <span>New Tab</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- ================= MAIN WORKSPACE ================= -->
+  <main class="max-w-7xl mx-auto px-3 sm:px-6 py-3 sm:py-4 flex-1 flex flex-col w-full">
+    <!-- Controls Bar -->
+    <div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2 mb-3 bg-white p-2 sm:p-2.5 rounded-xl border border-slate-200 shadow-xs">
+      <div class="flex flex-col sm:flex-row sm:items-center flex-1 gap-2">
+        <div class="relative flex-1">
+          <i data-lucide="search" class="w-4 h-4 text-slate-400 absolute left-3 top-2.5"></i>
+          <input type="text" id="searchInput" oninput="handleSearch(this.value)" placeholder="Search items, bin, or notes..." class="w-full pl-9 pr-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500">
+        </div>
+
+        <div class="flex items-center space-x-1.5 text-xs">
+          <span class="text-slate-500 font-medium hidden sm:inline">Sort:</span>
+          <select id="sortSelector" onchange="changeSort(this.value)" class="w-full sm:w-auto text-xs bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 font-medium text-slate-700 focus:outline-none">
+            <option value="alpha">Alphabetical (A - Z)</option>
+            <option value="alpha-desc">Alphabetical (Z - A)</option>
+            <option value="date-new">Date Added (Newest First)</option>
+            <option value="date-old">Date Added (Oldest First)</option>
+            <option value="updated-new">Last Updated (Newest First)</option>
+            <option value="updated-old">Last Updated (Oldest First)</option>
+            <option value="stock-low">Stock Level (Low to High)</option>
+            <option value="stock-high">Stock Level (High to Low)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="flex items-center space-x-2 pt-1 sm:pt-0 border-t sm:border-t-0 border-slate-100">
+        <button id="filterLowStockBtn" onclick="toggleLowStockFilter()" class="flex-1 sm:flex-none justify-center flex items-center space-x-1 px-2.5 py-1.5 text-xs font-medium rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 transition">
+          <i data-lucide="alert-triangle" class="w-3.5 h-3.5 text-amber-500 shrink-0"></i>
+          <span id="lowStockBtnText">Low Stock Only</span>
+        </button>
+
+        <button onclick="openItemModal('create')" class="flex-1 sm:flex-none justify-center flex items-center space-x-1.5 px-3 py-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg shadow-xs transition">
+          <i data-lucide="plus-circle" class="w-3.5 h-3.5 shrink-0"></i>
+          <span>Add Item</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- SPREADSHEET TABLE -->
+    <div class="hidden md:block bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+      <div class="overflow-x-auto min-w-full">
+        <table class="w-full text-left border-collapse table-fixed" id="inventoryTable">
+          <colgroup id="tableColgroup"></colgroup>
+          <thead id="tableHeader" class="text-xs uppercase text-slate-500 font-bold border-b border-slate-200 select-none"></thead>
+          <tbody id="tableBody" class="text-xs divide-y divide-slate-100"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- MOBILE CARDS -->
+    <div id="mobileCardContainer" class="block md:hidden space-y-2.5 pb-16"></div>
+
+    <div id="emptyState" class="hidden p-12 text-center bg-white rounded-xl border border-dashed border-slate-300 mt-2">
+      <i data-lucide="inbox" class="w-10 h-10 text-slate-300 mx-auto mb-2"></i>
+      <h3 class="font-semibold text-slate-700 text-sm">No items found</h3>
+      <p class="text-xs text-slate-500 mt-1">Try clearing filters or add your first item to this category.</p>
+    </div>
+  </main>
+
+  <!-- ================= ITEM ADD / EDIT MODAL ================= -->
+  <div id="itemModal" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-3 hidden">
+    <div class="bg-white rounded-2xl shadow-xl max-w-lg w-full overflow-hidden border border-slate-200 animate-in fade-in duration-150">
+      <div class="p-4 bg-slate-900 text-white flex items-center justify-between">
+        <h3 id="itemModalTitle" class="font-bold text-sm flex items-center space-x-2">
+          <i data-lucide="edit-3" class="w-4 h-4 text-emerald-400"></i>
+          <span>Edit Inventory Item</span>
+        </h3>
+        <button onclick="closeItemModal()" class="text-slate-400 hover:text-white p-1 rounded-md">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <form id="itemForm" onsubmit="handleSaveItem(event)" class="p-4 space-y-3 text-xs max-h-[82vh] overflow-y-auto">
+        <input type="hidden" id="editItemId" value="">
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div class="sm:col-span-2">
+            <label class="block font-semibold text-slate-700 mb-1">Item Name / Part Number *</label>
+            <input type="text" id="modalItemName" required placeholder="e.g. 1/4-20 Hex Nut (Pack of 100)" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+          </div>
+
+          <div>
+            <label class="block font-semibold text-slate-700 mb-1">Category / Tab *</label>
+            <select id="modalCategory" required class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:outline-none bg-white"></select>
+          </div>
+
+          <div>
+            <label class="block font-semibold text-slate-700 mb-1">Location / Bin Details</label>
+            <input type="text" id="modalLocation" placeholder="e.g. Bin 1-A / Top Drawer" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+          </div>
+
+          <div>
+            <label class="block font-semibold text-slate-700 mb-1">Current Stock (Remaining) *</label>
+            <input type="number" id="modalRemaining" min="0" required class="w-full px-3 py-2 font-mono-num font-bold text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+          </div>
+
+          <div>
+            <label class="block font-semibold text-slate-700 mb-1">Full Package / Baseline Total *</label>
+            <input type="number" id="modalTotal" min="1" required class="w-full px-3 py-2 font-mono-num font-bold text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+          </div>
+
+          <div>
+            <label class="block font-semibold text-slate-700 mb-1">1. Low Stock Reminder (Turns Yellow)</label>
+            <select id="modalLowThreshold" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:outline-none bg-white">
+              <option value="0.15">15% Remaining</option>
+              <option value="0.25">25% Remaining</option>
+              <option value="0.35">35% Remaining</option>
+              <option value="0.50" selected>50% Remaining (Standard)</option>
+              <option value="never">Never (No Reminder)</option>
+            </select>
+          </div>
+
+          <div>
+            <label class="block font-semibold text-slate-700 mb-1">2. Critical Re-Order Alert (Turns Red)</label>
+            <select id="modalReorderThreshold" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:outline-none bg-white">
+              <option value="0.05">5% Remaining</option>
+              <option value="0.10">10% Remaining</option>
+              <option value="0.15">15% Remaining</option>
+              <option value="0.25" selected>25% Remaining (Standard Critical)</option>
+              <option value="never">Never (Do Not Reorder / One-Off)</option>
+            </select>
+          </div>
+
+          <div>
+            <label class="block font-semibold text-slate-700 mb-1">Last Inventoried Date</label>
+            <input type="date" id="modalLastUpdated" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:outline-none bg-white">
+          </div>
+
+          <div class="sm:col-span-2">
+            <label class="block font-semibold text-slate-700 mb-1">Item Photo URL or File</label>
+            <div class="flex items-center space-x-2">
+              <input type="text" id="modalPhotoUrl" placeholder="https://... or upload" class="flex-1 px-3 py-1.5 border border-slate-300 rounded-lg focus:outline-none text-xs">
+              <label class="cursor-pointer px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded-lg font-medium text-slate-700 flex items-center space-x-1">
+                <i data-lucide="upload" class="w-3.5 h-3.5"></i>
+                <span>Upload</span>
+                <input type="file" accept="image/*" class="hidden" onchange="handleFileUpload(event, 'modalPhotoUrl')">
+              </label>
+            </div>
+          </div>
+
+          <div class="sm:col-span-2">
+            <label class="block font-semibold text-slate-700 mb-1">Location Photo URL or File</label>
+            <div class="flex items-center space-x-2">
+              <input type="text" id="modalLocationPhotoUrl" placeholder="Photo of bin, shelf, or rack..." class="flex-1 px-3 py-1.5 border border-slate-300 rounded-lg focus:outline-none text-xs">
+              <label class="cursor-pointer px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded-lg font-medium text-slate-700 flex items-center space-x-1">
+                <i data-lucide="camera" class="w-3.5 h-3.5"></i>
+                <span>Upload</span>
+                <input type="file" accept="image/*" class="hidden" onchange="handleFileUpload(event, 'modalLocationPhotoUrl')">
+              </label>
+            </div>
+          </div>
+
+          <div class="sm:col-span-2">
+            <label class="block font-semibold text-slate-700 mb-1">Installer Notes / Part Specs</label>
+            <textarea id="modalNotes" rows="2" placeholder="e.g. Standard installation hardware for wall brackets..." class="w-full px-3 py-1.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:outline-none"></textarea>
+          </div>
+        </div>
+
+        <div class="pt-3 border-t border-slate-200 flex items-center justify-between">
+          <button type="button" id="modalDeleteBtn" onclick="deleteCurrentItem()" class="text-red-600 hover:text-red-700 font-semibold flex items-center space-x-1">
+            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+            <span>Delete</span>
+          </button>
+          <div class="flex items-center space-x-2">
+            <button type="button" onclick="closeItemModal()" class="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg font-medium">Cancel</button>
+            <button type="submit" class="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-lg shadow-xs">Save Item</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ================= CHECK OUT ITEM ADD / EDIT MODAL ================= -->
+  <div id="checkOutItemModal" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-3 hidden">
+    <div class="bg-white rounded-2xl shadow-xl max-w-lg w-full overflow-hidden border border-slate-200 animate-in fade-in duration-150">
+      <div class="p-4 bg-slate-900 text-white flex items-center justify-between">
+        <h3 id="checkOutModalTitle" class="font-bold text-sm flex items-center space-x-2">
+          <i data-lucide="clipboard-check" class="w-4 h-4 text-emerald-400"></i>
+          <span>Check Out Equipment / Tool</span>
+        </h3>
+        <button onclick="closeCheckOutModal()" class="text-slate-400 hover:text-white p-1 rounded-md">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <form id="checkOutForm" onsubmit="handleSaveCheckOutItem(event)" class="p-4 space-y-3 text-xs max-h-[82vh] overflow-y-auto">
+        <input type="hidden" id="editCheckOutId" value="">
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div class="sm:col-span-2">
+            <div class="flex items-center justify-between mb-1">
+              <label class="block font-semibold text-slate-700">Person (Install Team Member) *</label>
+              <button type="button" onclick="promptAddNewTeamMember('coModalPerson')" class="text-[11px] text-emerald-600 hover:text-emerald-700 font-semibold flex items-center space-x-1">
+                <i data-lucide="user-plus" class="w-3 h-3"></i>
+                <span>+ Add Person</span>
+              </button>
+            </div>
+            <select id="coModalPerson" required onchange="handleModalPersonSelectChange(this)" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:outline-none bg-white font-medium"></select>
+          </div>
+
+          <div class="sm:col-span-2">
+            <label class="block font-semibold text-slate-700 mb-1">Item Name *</label>
+            <input type="text" id="coModalItemName" required placeholder="e.g. Fluke Cable Tester / Bosch Rotary Laser" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+          </div>
+
+          <div>
+            <label class="block font-semibold text-slate-700 mb-1">Check Out Date *</label>
+            <input type="date" id="coModalCheckoutDate" required class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:outline-none bg-white">
+          </div>
+
+          <div>
+            <label class="block font-semibold text-slate-700 mb-1">Due Date *</label>
+            <input type="date" id="coModalDueDate" required class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:outline-none bg-white">
+          </div>
+
+          <div class="sm:col-span-2">
+            <label class="block font-semibold text-slate-700 mb-1">Check Out Status</label>
+            <select id="coModalStatus" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:outline-none bg-white font-medium">
+              <option value="checked_out">Checked Out (Green — Yellow automatically if past Due Date)</option>
+              <option value="mia">MIA / Missing (Red)</option>
+              <option value="returned">Returned (Blue)</option>
+            </select>
+          </div>
+
+          <div class="sm:col-span-2">
+            <label class="block font-semibold text-slate-700 mb-1">Item Photo URL or File</label>
+            <div class="flex items-center space-x-2">
+              <input type="text" id="coModalPhotoUrl" placeholder="https://... or upload photo" class="flex-1 px-3 py-1.5 border border-slate-300 rounded-lg focus:outline-none text-xs">
+              <label class="cursor-pointer px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded-lg font-medium text-slate-700 flex items-center space-x-1">
+                <i data-lucide="upload" class="w-3.5 h-3.5"></i>
+                <span>Upload</span>
+                <input type="file" accept="image/*" class="hidden" onchange="handleFileUpload(event, 'coModalPhotoUrl')">
+              </label>
+            </div>
+          </div>
+
+          <div class="sm:col-span-2">
+            <label class="block font-semibold text-slate-700 mb-1">Notes (Job Site / Condition)</label>
+            <textarea id="coModalNotes" rows="2" placeholder="e.g. Taken for Room 4 sensor testing..." class="w-full px-3 py-1.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:outline-none"></textarea>
+          </div>
+        </div>
+
+        <div class="pt-3 border-t border-slate-200 flex items-center justify-between">
+          <button type="button" id="coModalDeleteBtn" onclick="deleteCurrentCheckOutItem()" class="text-red-600 hover:text-red-700 font-semibold flex items-center space-x-1">
+            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+            <span>Delete</span>
+          </button>
+          <div class="flex items-center space-x-2 ml-auto">
+            <button type="button" onclick="closeCheckOutModal()" class="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg font-medium">Cancel</button>
+            <button type="submit" class="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-lg shadow-xs">Save Check Out</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ================= RESTOCK IN ROUTE MODAL ================= -->
+  <div id="restockInRouteModal" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs hidden flex items-center justify-center p-3">
+    <div class="bg-white rounded-2xl shadow-xl max-w-md w-full overflow-hidden border border-slate-200 animate-in fade-in duration-150">
+      <div class="p-4 bg-slate-900 text-white flex items-center justify-between">
+        <h3 class="font-bold text-sm flex items-center space-x-2">
+          <i data-lucide="truck" class="w-4 h-4 text-sky-400"></i>
+          <span>Restock In Route</span>
+        </h3>
+        <button onclick="closeRestockInRouteModal()" class="text-slate-400 hover:text-white p-1 rounded-md">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <form id="restockInRouteForm" onsubmit="handleSaveRestockInRoute(event)" class="p-4 space-y-3.5 text-xs">
+        <input type="hidden" id="inRouteItemId">
+
+        <div class="p-2.5 bg-slate-50 border border-slate-200 rounded-lg">
+          <span class="block text-[10px] font-bold uppercase text-slate-400">Target Item</span>
+          <p id="inRouteItemNameDisplay" class="font-bold text-slate-800 text-sm mt-0.5 truncate">—</p>
+          <p id="inRouteCurrentStockDisplay" class="text-[11px] text-slate-500 font-mono mt-0.5">Current Stock: —</p>
+        </div>
+
+        <div>
+          <label class="block font-semibold text-slate-700 mb-1">Quantity Ordered *</label>
+          <input type="number" id="inRouteQuantity" min="1" required placeholder="e.g. 50" class="w-full px-3 py-2 border border-slate-300 rounded-lg font-mono-num font-bold text-sm focus:ring-2 focus:ring-sky-500 focus:outline-none">
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block font-semibold text-slate-700 mb-1">Date Ordered *</label>
+            <input type="date" id="inRouteOrderedDate" required class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:outline-none bg-white">
+          </div>
+
+          <div>
+            <label class="block font-semibold text-slate-700 mb-1">Expected Delivery (ETA) *</label>
+            <input type="date" id="inRouteDeliveryDate" required class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:outline-none bg-white font-medium">
+          </div>
+        </div>
+
+        <div>
+          <label class="block font-semibold text-slate-700 mb-1">PO / Tracking / Order Notes</label>
+          <input type="text" id="inRouteOrderNotes" placeholder="e.g. PO #88392 / FedEx 7748..." class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:outline-none">
+        </div>
+
+        <div class="pt-2 border-t border-slate-200 flex items-center justify-between">
+          <button type="button" id="clearInRouteBtn" onclick="clearActiveInRouteOrder()" class="hidden text-xs text-rose-600 hover:text-rose-700 font-semibold flex items-center space-x-1">
+            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+            <span>Cancel In-Route Order</span>
+          </button>
+          <div class="flex items-center space-x-2 ml-auto">
+            <button type="button" onclick="closeRestockInRouteModal()" class="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg font-medium">Cancel</button>
+            <button type="submit" class="px-4 py-1.5 bg-sky-600 hover:bg-sky-700 text-white font-semibold rounded-lg shadow-xs flex items-center space-x-1.5">
+              <i data-lucide="check" class="w-3.5 h-3.5"></i>
+              <span>Save In Route</span>
+            </button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ================= VERSION HISTORY & AUDIT LOG MODAL ================= -->
+  <div id="auditModal" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs hidden flex items-center justify-center p-3">
+    <div class="bg-white rounded-2xl shadow-xl max-w-2xl w-full overflow-hidden border border-slate-200 animate-in fade-in duration-150">
+      <div class="p-4 bg-slate-900 text-white flex items-center justify-between">
+        <div class="flex items-center space-x-2">
+          <i data-lucide="history" class="w-5 h-5 text-indigo-400"></i>
+          <div>
+            <h3 class="font-bold text-sm">Version History &amp; Audit Log</h3>
+            <p class="text-[11px] text-slate-400">Chronological record of all inventory edits &amp; user activities</p>
+          </div>
+        </div>
+        <button onclick="closeAuditModal()" class="text-slate-400 hover:text-white p-1 rounded-md">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <div class="p-4 border-b border-slate-100 bg-slate-50 flex items-center justify-between text-xs">
+        <span class="text-slate-600 font-medium">Recent Activity Log (<span id="auditLogCount">0</span> entries)</span>
+        <button onclick="clearAuditLog()" class="text-slate-400 hover:text-red-600 font-medium transition">Clear History</button>
+      </div>
+
+      <div id="auditLogList" class="p-4 space-y-2.5 max-h-[60vh] overflow-y-auto text-xs divide-y divide-slate-100"></div>
+
+      <div class="p-3 bg-slate-50 border-t border-slate-200 flex justify-end">
+        <button onclick="closeAuditModal()" class="px-4 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 font-semibold rounded-lg text-xs">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= SAVE & SEND EMAIL BACKUP MODAL ================= -->
+  <div id="emailBackupModal" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs hidden flex items-center justify-center p-3">
+    <div class="bg-white rounded-2xl shadow-xl max-w-md w-full overflow-hidden border border-slate-200 animate-in fade-in duration-150">
+      <div class="p-4 bg-emerald-800 text-white flex items-center justify-between">
+        <div class="flex items-center space-x-2">
+          <i data-lucide="mail-check" class="w-5 h-5 text-emerald-300"></i>
+          <div>
+            <h3 class="font-bold text-sm">Save &amp; Send Email Backup</h3>
+            <p class="text-[11px] text-emerald-200">Safeguard a copy to your inbox</p>
+          </div>
+        </div>
+        <button onclick="closeEmailSaveModal()" class="text-emerald-200 hover:text-white p-1 rounded-md">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <div class="p-4 space-y-3.5 text-xs">
+        <div>
+          <label class="block font-semibold text-slate-700 mb-1">Destination Email Address</label>
+          <input type="email" id="backupDestinationEmail" placeholder="you@level99.com" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+        </div>
+
+        <div class="p-3 rounded-lg bg-slate-50 border border-slate-200">
+          <h4 class="font-semibold text-slate-700 mb-1.5">What is included in this backup:</h4>
+          <ul class="space-y-1 text-slate-600 text-[11px] list-disc list-inside">
+            <li>Item counts and thresholds across all tabs</li>
+            <li>In-route restock tracking and expected ETA dates</li>
+            <li>Bin locations, hardware notes, and audit updates</li>
+          </ul>
+        </div>
+
+        <div class="pt-2 flex items-center justify-between">
+          <button onclick="handleSaveOnlyWithoutEmail()" class="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-lg text-xs transition">
+            Save Only
+          </button>
+          <button onclick="handleSendBackupEmail()" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-lg shadow-sm text-xs flex items-center space-x-1.5 transition">
+            <i data-lucide="send" class="w-3.5 h-3.5"></i>
+            <span>Send Backup Email</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= EXPORT GOOGLE DOC & PDF MODAL ================= -->
+  <div id="exportModal" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs hidden flex items-center justify-center p-3">
+    <div class="bg-white rounded-2xl shadow-xl max-w-3xl w-full overflow-hidden border border-slate-200 animate-in fade-in duration-150">
+      <div class="p-4 bg-slate-900 text-white flex items-center justify-between">
+        <div class="flex items-center space-x-2">
+          <i data-lucide="file-spreadsheet" class="w-5 h-5 text-emerald-400"></i>
+          <div>
+            <h3 class="font-bold text-sm">Export Report (Google Docs &amp; PDF)</h3>
+            <p class="text-[11px] text-slate-400">Customized report styled for team handouts &amp; Google Docs</p>
+          </div>
+        </div>
+        <button onclick="closeExportModal()" class="text-slate-400 hover:text-white p-1 rounded-md">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <div class="p-4 space-y-4 max-h-[78vh] overflow-y-auto text-xs">
+        <div>
+          <div class="flex items-center justify-between mb-1.5">
+            <label class="font-semibold text-slate-700">1. Select Tabs to Export</label>
+            <div class="space-x-2 text-[11px]">
+              <button onclick="toggleAllExportTabs(true)" class="text-emerald-600 hover:underline">Select All</button>
+              <span class="text-slate-300">|</span>
+              <button onclick="toggleAllExportTabs(false)" class="text-slate-500 hover:underline">Clear All</button>
+            </div>
+          </div>
+          <div id="exportTabsSelectionList" class="grid grid-cols-2 sm:grid-cols-3 gap-2 p-2.5 bg-slate-50 border border-slate-200 rounded-lg"></div>
+        </div>
+
+        <div>
+          <label class="font-semibold text-slate-700 block mb-1.5">2. Select Columns to Include</label>
+          <div id="exportColumnsSelectionList" class="grid grid-cols-2 sm:grid-cols-4 gap-2 p-2.5 bg-slate-50 border border-slate-200 rounded-lg">
+            <label class="flex items-center space-x-1.5 cursor-pointer font-medium text-slate-700">
+              <input type="checkbox" id="expColItem" checked class="rounded text-emerald-600" onchange="updateExportPreview()">
+              <span>ITEM</span>
+            </label>
+            <label class="flex items-center space-x-1.5 cursor-pointer font-medium text-slate-700">
+              <input type="checkbox" id="expColStock" checked class="rounded text-emerald-600" onchange="updateExportPreview()">
+              <span>STOCK LEVEL</span>
+            </label>
+            <label class="flex items-center space-x-1.5 cursor-pointer font-medium text-slate-700">
+              <input type="checkbox" id="expColLocation" checked class="rounded text-emerald-600" onchange="updateExportPreview()">
+              <span>LOCATION</span>
+            </label>
+            <label class="flex items-center space-x-1.5 cursor-pointer font-medium text-slate-700">
+              <input type="checkbox" id="expColNotes" checked class="rounded text-emerald-600" onchange="updateExportPreview()">
+              <span>NOTES</span>
+            </label>
+            <label class="flex items-center space-x-1.5 cursor-pointer font-medium text-slate-700">
+              <input type="checkbox" id="expColUpdated" class="rounded text-emerald-600" onchange="updateExportPreview()">
+              <span>LAST UPDATED</span>
+            </label>
+          </div>
+        </div>
+
+        <div>
+          <label class="font-semibold text-slate-700 block mb-1.5">3. Row Limits &amp; Ranges per Selected Tab</label>
+          <div id="tabRowLimitsContainer" class="space-y-2 p-2.5 bg-slate-50 border border-slate-200 rounded-lg"></div>
+        </div>
+
+        <div>
+          <div class="flex items-center justify-between mb-1.5">
+            <label class="font-semibold text-slate-700 flex items-center space-x-1.5">
+              <span>4. Document Live Preview</span>
+              <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
+                <i data-lucide="edit-2" class="w-2.5 h-2.5 mr-1"></i> Click anywhere to edit text
+              </span>
+            </label>
+            <button type="button" onclick="resetAndRegenerateReportPreview()" title="Reset any manual edits and rebuild from table settings" class="text-[11px] text-slate-500 hover:text-emerald-700 flex items-center space-x-1 font-medium transition">
+              <i data-lucide="rotate-ccw" class="w-3 h-3"></i>
+              <span>Rebuild Preview</span>
+            </button>
+          </div>
+          <div id="docPreviewContainer" contenteditable="true" spellcheck="true" class="p-4 bg-white border-2 border-slate-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200/50 rounded-lg max-h-72 overflow-y-auto font-sans shadow-inner outline-none transition"></div>
+          <p class="text-[10px] text-slate-400 mt-1">Tip: Click and type directly into the preview to customize titles, dates, or add notes before printing or copying.</p>
+        </div>
+      </div>
+
+      <div class="p-3 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2">
+        <span class="text-[11px] text-slate-500">Formats table borders &amp; font styles matching Google Docs</span>
+        <div class="flex items-center space-x-2">
+          <button onclick="copyDocReportToClipboard()" class="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg text-xs shadow-xs flex items-center space-x-1">
+            <i data-lucide="copy" class="w-3.5 h-3.5"></i>
+            <span>Copy for Google Docs</span>
+          </button>
+          <button onclick="printReport()" class="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-lg text-xs shadow-xs flex items-center space-x-1">
+            <i data-lucide="printer" class="w-3.5 h-3.5"></i>
+            <span>Print / Save PDF</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= DATA BACKUP MODAL ================= -->
+  <div id="backupManagerModal" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs hidden flex items-center justify-center p-3">
+    <div class="bg-white rounded-2xl shadow-xl max-w-md w-full overflow-hidden border border-slate-200 animate-in fade-in duration-150">
+      <div class="p-4 bg-slate-900 text-white flex items-center justify-between">
+        <div class="flex items-center space-x-2">
+          <i data-lucide="database" class="w-5 h-5 text-emerald-400"></i>
+          <div>
+            <h3 class="font-bold text-sm">Data Backup &amp; Restore</h3>
+            <p class="text-[11px] text-slate-400">Download or restore JSON snapshots</p>
+          </div>
+        </div>
+        <button onclick="closeBackupModal()" class="text-slate-400 hover:text-white p-1 rounded-md">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <div class="p-4 space-y-4 text-xs">
+        <div class="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800">
+          <p class="font-semibold mb-1">Backup Protection</p>
+          <p class="text-[11px]">Download a JSON snapshot before updating or deploying new code revisions.</p>
+        </div>
+
+        <div class="space-y-2">
+          <button onclick="downloadJsonBackup()" class="w-full py-2.5 bg-slate-800 hover:bg-slate-900 text-white font-semibold rounded-lg flex items-center justify-center space-x-1.5">
+            <i data-lucide="download" class="w-3.5 h-3.5"></i>
+            <span>Download Backup File (.json)</span>
+          </button>
+
+          <label class="w-full py-2.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 font-semibold rounded-lg flex items-center justify-center space-x-1.5 cursor-pointer">
+            <i data-lucide="upload" class="w-3.5 h-3.5 text-emerald-600"></i>
+            <span>Restore Backup File</span>
+            <input type="file" accept=".json" class="hidden" onchange="importJsonBackup(event)">
+          </label>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= COLUMN SETTINGS MODAL ================= -->
+  <div id="columnSettingsModal" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs hidden flex items-center justify-center p-3">
+    <div class="bg-white rounded-2xl shadow-xl max-w-sm w-full overflow-hidden border border-slate-200 animate-in fade-in duration-150">
+      <div class="p-4 bg-slate-900 text-white flex items-center justify-between">
+        <h3 class="font-bold text-sm flex items-center space-x-2">
+          <i data-lucide="columns" class="w-4 h-4 text-slate-300"></i>
+          <span>Customize Columns</span>
+        </h3>
+        <button onclick="closeColumnSettingsModal()" class="text-slate-400 hover:text-white p-1 rounded-md">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <div class="p-4 space-y-3 text-xs max-h-80 overflow-y-auto" id="columnListContainer"></div>
+
+      <div class="p-3 bg-slate-50 border-t border-slate-200 flex justify-end">
+        <button onclick="closeColumnSettingsModal()" class="px-4 py-1.5 bg-emerald-600 text-white rounded-lg font-semibold text-xs">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= TAB CREATE / RENAME MODAL ================= -->
+  <div id="tabModal" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-3 hidden">
+    <div class="bg-white rounded-2xl shadow-xl max-w-xs w-full overflow-hidden border border-slate-200 animate-in fade-in duration-150">
+      <div class="p-3.5 bg-slate-900 text-white flex items-center justify-between">
+        <h3 id="tabModalTitle" class="font-bold text-xs">Create New Category Tab</h3>
+        <button onclick="closeTabModal()" class="text-slate-400 hover:text-white p-1 rounded">
+          <i data-lucide="x" class="w-3.5 h-3.5"></i>
+        </button>
+      </div>
+      <div class="p-4 space-y-3 text-xs">
+        <input type="hidden" id="tabModalMode" value="create">
+        <input type="hidden" id="tabModalOriginalName" value="">
+        <div>
+          <label class="block font-semibold text-slate-700 mb-1">Tab Name</label>
+          <input type="text" id="tabModalInput" placeholder="e.g. Van 2 Tool Rack" class="w-full px-3 py-1.5 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500">
+        </div>
+        <div class="flex items-center justify-between pt-2">
+          <button type="button" id="deleteTabBtn" onclick="deleteCurrentTab()" class="text-xs text-red-600 hover:text-red-700 font-semibold flex items-center space-x-1 hidden">
+            <i data-lucide="trash-2" class="w-3 h-3"></i>
+            <span>Delete Tab</span>
+          </button>
+          <div class="flex justify-end space-x-2 ml-auto">
+            <button type="button" onclick="closeTabModal()" class="px-3 py-1.5 bg-slate-100 text-slate-700 rounded-lg">Cancel</button>
+            <button type="button" onclick="saveTabModal()" class="px-3 py-1.5 bg-emerald-600 text-white rounded-lg font-semibold">Save</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= CUSTOM DIALOG MODAL (CONFIRM / PROMPT / NOTICE) ================= -->
+  <div id="customDialogModal" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs hidden flex items-center justify-center p-3">
+    <div class="bg-white rounded-2xl shadow-xl max-w-sm w-full overflow-hidden border border-slate-200 animate-in fade-in duration-150">
+      <div class="p-3.5 bg-slate-900 text-white flex items-center justify-between">
+        <h3 id="customDialogTitle" class="font-bold text-xs flex items-center space-x-1.5">
+          <i data-lucide="info" class="w-4 h-4 text-emerald-400"></i>
+          <span>Confirm Action</span>
+        </h3>
+        <button onclick="closeCustomDialog()" class="text-slate-400 hover:text-white p-1 rounded">
+          <i data-lucide="x" class="w-3.5 h-3.5"></i>
+        </button>
+      </div>
+      <div class="p-4 space-y-3 text-xs">
+        <p id="customDialogMessage" class="text-slate-700 font-medium leading-relaxed"></p>
+        <div id="customDialogInputWrapper" class="hidden">
+          <input type="text" id="customDialogInput" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 text-xs font-medium">
+        </div>
+        <div class="flex justify-end space-x-2 pt-2 border-t border-slate-100">
+          <button type="button" id="customDialogCancelBtn" onclick="closeCustomDialog()" class="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg font-medium">Cancel</button>
+          <button type="button" id="customDialogConfirmBtn" class="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-semibold shadow-xs">Confirm</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= FULLSCREEN PHOTO LIGHTBOX ================= -->
+  <div id="photoLightbox" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm hidden flex items-center justify-center p-4" onclick="closeLightbox()">
+    <div class="relative max-w-2xl w-full max-h-[85vh] flex flex-col items-center justify-center" onclick="event.stopPropagation()">
+      <button onclick="closeLightbox()" class="absolute -top-10 right-0 text-white hover:text-slate-300 p-1">
+        <i data-lucide="x" class="w-6 h-6"></i>
+      </button>
+      <img id="lightboxImg" src="" alt="Inventory Photo" class="max-w-full max-h-[75vh] object-contain rounded-xl shadow-2xl bg-slate-900">
+      <p id="lightboxCaption" class="text-white text-xs mt-3 text-center font-medium"></p>
+    </div>
+  </div>
+
+  <!-- ================= NOTIFICATION TOAST ================= -->
+  <div id="toastNotification" class="fixed bottom-5 right-5 z-50 bg-slate-900 text-white px-4 py-2.5 rounded-xl shadow-2xl text-xs font-semibold flex items-center space-x-2 transform transition-all duration-300 pointer-events-none translate-y-20 opacity-0">
+    <i data-lucide="check-circle" class="w-4 h-4 text-emerald-400"></i>
+    <span id="toastMessage">Item saved successfully</span>
+  </div>
+
+  <!-- ================= JAVASCRIPT APPLICATION CORE ================= -->
+  <script>
+    // Storage Keys
+    const DB_STORAGE_KEY = 'INSTALL_TEAM_LIVE_DATABASE_V3';
+    const COLS_STORAGE_KEY = 'INSTALL_TEAM_COLS_CONFIG';
+    const CHECKOUT_COLS_STORAGE_KEY = 'INSTALL_TEAM_CHECKOUT_COLS_CONFIG';
+    const TEAM_MEMBERS_STORAGE_KEY = 'INSTALL_TEAM_MEMBERS_LIST_V1';
+    const TITLE_STORAGE_KEY = 'INSTALL_TEAM_SHEET_TITLE';
+    const USER_STORAGE_KEY = 'INSTALL_TEAM_AUTH_USER';
+    const AUDIT_STORAGE_KEY = 'INSTALL_TEAM_AUDIT_LOGS';
+    const ACCOUNTS_STORAGE_KEY = 'INSTALL_TEAM_ACCOUNTS_VAULT';
+    const WIDTHS_STORAGE_KEY = 'INSTALL_TEAM_COL_WIDTHS_V3';
+    const REMEMBER_STORAGE_KEY = 'INSTALL_TEAM_REMEMBER_CREDENTIALS';
+
+    const DEFAULT_TEAM_MEMBERS = [
+      "Kim",
+      "Andy",
+      "Jay",
+      "Mike",
+      "Brett",
+      "Jeff",
+      "Mackenzie",
+      "Frank"
+    ];
+
+    const DEFAULT_CHECKOUT_SEED = [
+      {
+        id: "co1",
+        person: "Kim",
+        name: "Fluke Networks Cable Tester",
+        photo: "",
+        checkoutDate: "2026-11-02",
+        dueDate: "2026-11-10",
+        status: "checked_out",
+        notes: "Testing Cat6 runs in West Wing",
+        dateAdded: 10
+      },
+      {
+        id: "co2",
+        person: "Andy",
+        name: "Bosch Self-Leveling Rotary Laser",
+        photo: "",
+        checkoutDate: "2026-10-24",
+        dueDate: "2026-10-30",
+        status: "checked_out",
+        notes: "Overdue — needed back for ceiling grid alignment",
+        dateAdded: 11
+      },
+      {
+        id: "co3",
+        person: "Mike",
+        name: "Milwaukee M18 Hammer Drill Kit",
+        photo: "",
+        checkoutDate: "2026-10-20",
+        dueDate: "2026-10-25",
+        status: "mia",
+        notes: "Last seen near loading dock",
+        dateAdded: 12
+      },
+      {
+        id: "co4",
+        person: "Jay",
+        name: "Thermal Imaging Camera",
+        photo: "",
+        checkoutDate: "2026-10-28",
+        dueDate: "2026-11-01",
+        status: "returned",
+        notes: "Returned to cage locker in good condition",
+        dateAdded: 13
+      }
+    ];
+
+    // Default Seed Data
+    const DEFAULT_SEED_DATA = {
+      "Wirerack Inventory": [
+        { 
+          id: "w1", 
+          name: "1/4-20 Hex Nut (Pack of 100)", 
+          remaining: 17, 
+          total: 100, 
+          lowThreshold: "0.50", 
+          reorderThreshold: "0.25", 
+          location: "Bin 1-A", 
+          notes: "Standard installation hardware for brackets", 
+          updated: "2026-11-04", 
+          photo: "", 
+          locationPhoto: "", 
+          dateAdded: 1,
+          inRoute: { active: false }
+        },
+        { 
+          id: "w2", 
+          name: "Cat6 RJ45 Patch Cable 7 FT (Blue)", 
+          remaining: 10, 
+          total: 25, 
+          lowThreshold: "0.50", 
+          reorderThreshold: "0.25", 
+          location: "Shelf 2", 
+          notes: "Low stock reminder active", 
+          updated: "2026-10-26", 
+          photo: "", 
+          locationPhoto: "", 
+          dateAdded: 2,
+          inRoute: { active: true, quantity: 20, dateOrdered: "2026-10-28", expectedDelivery: "2026-11-06", notes: "FedEx Ground" }
+        }
+      ],
+      "Husky Tool Box": [
+        { 
+          id: "h1", 
+          name: "Label Makers", 
+          remaining: 3, 
+          total: 3, 
+          lowThreshold: "never", 
+          reorderThreshold: "never", 
+          location: "Top Drawer", 
+          notes: "Keep spare tapes in bottom locker", 
+          updated: "2026-10-20", 
+          photo: "", 
+          locationPhoto: "", 
+          dateAdded: 3,
+          inRoute: { active: false }
+        }
+      ],
+      "Cage Inventory": [
+        { 
+          id: "c1", 
+          name: "ASUS NUC Guest Desk Kiosk 1", 
+          remaining: 0, 
+          total: 4, 
+          lowThreshold: "0.50", 
+          reorderThreshold: "0.25", 
+          location: "Nook box in cage", 
+          notes: "Delayed delivery demonstration", 
+          updated: "2026-10-26", 
+          photo: "", 
+          locationPhoto: "", 
+          dateAdded: 4,
+          inRoute: { active: true, quantity: 4, dateOrdered: "2026-10-15", expectedDelivery: "2026-10-24", notes: "Awaiting backorder" }
+        }
+      ],
+      "Cabinet Inventory": [
+        { 
+          id: "b1", 
+          name: "AA Batteries (Pack of 24)", 
+          remaining: 4, 
+          total: 24, 
+          lowThreshold: "0.50", 
+          reorderThreshold: "0.25", 
+          location: "Shelf 2", 
+          notes: "Sensors & wireless controllers", 
+          updated: "2026-10-28", 
+          photo: "", 
+          locationPhoto: "", 
+          dateAdded: 5,
+          inRoute: { active: false }
+        }
+      ],
+      "Gang Box": [
+        { 
+          id: "g1", 
+          name: "Impact Screw Guns", 
+          remaining: 2, 
+          total: 2, 
+          lowThreshold: "never", 
+          reorderThreshold: "never", 
+          location: "Gang Box Central", 
+          notes: "Dewalt 20V with batteries", 
+          updated: "2026-10-25", 
+          photo: "", 
+          locationPhoto: "", 
+          dateAdded: 6,
+          inRoute: { active: false }
+        }
+      ],
+      "Hardware Cabinet": [],
+      "Check Out": JSON.parse(JSON.stringify(DEFAULT_CHECKOUT_SEED))
+    };
+
+    const DEFAULT_COLUMNS = [
+      { id: 'counter', label: 'COUNTER', visible: true },
+      { id: 'status', label: 'STATUS', visible: true },
+      { id: 'item', label: 'ITEM NAME', visible: true },
+      { id: 'photo', label: 'PHOTO', visible: true },
+      { id: 'location', label: 'LOCATION / BIN', visible: true },
+      { id: 'locationPhoto', label: 'LOCATION PHOTO', visible: true },
+      { id: 'notes', label: 'NOTES', visible: true },
+      { id: 'updated', label: 'LAST UPDATED', visible: true },
+      { id: 'actions', label: 'ACTIONS', visible: true }
+    ];
+
+    const DEFAULT_CHECKOUT_COLUMNS = [
+      { id: 'person', label: 'PERSON', visible: true },
+      { id: 'item', label: 'ITEM NAME', visible: true },
+      { id: 'photo', label: 'PHOTO', visible: true },
+      { id: 'checkoutDate', label: 'CHECK OUT DATE', visible: true },
+      { id: 'dueDate', label: 'DUE DATE', visible: true },
+      { id: 'actions', label: 'ACTIONS', visible: true }
+    ];
+
+    const DEFAULT_COL_WIDTHS = {
+      counter: 110,
+      status: 160,
+      item: 320,
+      photo: 70,
+      location: 160,
+      locationPhoto: 80,
+      notes: 220,
+      updated: 110,
+      actions: 125,
+      person: 180,
+      checkoutDate: 145,
+      dueDate: 145
+    };
+
+    // Reactive State
+    let inventory = {};
+    let columns = [];
+    let checkOutColumns = [];
+    let teamMembers = [];
+    let colWidths = {};
+    let currentTab = '';
+    let sheetTitle = 'Total Inventory';
+    let searchQuery = '';
+    let currentSort = 'alpha';
+    let filterLowStockOnly = false;
+    let hideNeverOos = false;
+    let hideNotes = false;
+    let currentUser = null;
+    let authMode = 'login';
+    let auditLogs = [];
+    let accountsVault = [];
+    let syncChannel = null;
+
+    function isCheckOutTab(tabName = currentTab) {
+      return (tabName || '').trim().toLowerCase() === 'check out';
+    }
+
+    function getActiveColumns() {
+      return isCheckOutTab(currentTab) ? checkOutColumns : columns;
+    }
+
+    // Resizing state
+    let activeResizingCol = null;
+    let startX = 0;
+    let startWidth = 0;
+
+    // ================= CUSTOM NON-BLOCKING DIALOGS =================
+    function openCustomDialog({ title = 'Notification', message = '', showInput = false, defaultValue = '', showCancel = true, confirmText = 'Confirm', onConfirm = null }) {
+      const modal = document.getElementById('customDialogModal');
+      document.getElementById('customDialogTitle').innerHTML = `<i data-lucide="info" class="w-4 h-4 text-emerald-400"></i><span>${escapeHtml(title)}</span>`;
+      document.getElementById('customDialogMessage').textContent = message;
+
+      const inputWrapper = document.getElementById('customDialogInputWrapper');
+      const inputEl = document.getElementById('customDialogInput');
+      if (showInput) {
+        inputWrapper.classList.remove('hidden');
+        inputEl.value = defaultValue;
+      } else {
+        inputWrapper.classList.add('hidden');
+      }
+
+      const cancelBtn = document.getElementById('customDialogCancelBtn');
+      if (showCancel) {
+        cancelBtn.classList.remove('hidden');
+      } else {
+        cancelBtn.classList.add('hidden');
+      }
+
+      const confirmBtn = document.getElementById('customDialogConfirmBtn');
+      confirmBtn.textContent = confirmText;
+      confirmBtn.onclick = () => {
+        const val = showInput ? inputEl.value : true;
+        closeCustomDialog();
+        if (typeof onConfirm === 'function') onConfirm(val);
+      };
+
+      modal.classList.remove('hidden');
+      lucide.createIcons();
+      if (showInput) {
+        setTimeout(() => inputEl.focus(), 50);
+      }
+    }
+
+    function closeCustomDialog() {
+      document.getElementById('customDialogModal').classList.add('hidden');
+    }
+
+    // ================= INITIALIZATION =================
+    window.onload = function() {
+      initAuth();
+      loadData();
+      initSync();
+      renderAll();
+
+      // Listen for outside clicks to close width popover
+      document.addEventListener('click', (e) => {
+        const popover = document.getElementById('widthSlidersPopover');
+        const trigger = e.target.closest('button[title="Adjust Column Widths"]');
+        if (popover && !popover.contains(e.target) && !trigger) {
+          popover.classList.add('hidden');
+        }
+      });
+    };
+
+    // ================= AUTHENTICATION =================
+    function populateRememberedCredentials() {
+      const remembered = localStorage.getItem(REMEMBER_STORAGE_KEY);
+      if (remembered) {
+        try {
+          const creds = JSON.parse(remembered);
+          document.getElementById('authEmailInput').value = creds.email || '';
+          document.getElementById('authPasswordInput').value = creds.pass || '';
+          document.getElementById('rememberMeCheckbox').checked = true;
+          return;
+        } catch (e) {}
+      }
+      document.getElementById('authEmailInput').value = '';
+      document.getElementById('authPasswordInput').value = '';
+      document.getElementById('rememberMeCheckbox').checked = false;
+    }
+
+    function initAuth() {
+      try {
+        const storedAccounts = localStorage.getItem(ACCOUNTS_STORAGE_KEY);
+        if (storedAccounts) {
+          accountsVault = JSON.parse(storedAccounts);
+          const adminIdx = accountsVault.findIndex(a => a.email === "kwilks@level99.com");
+          if (adminIdx !== -1) {
+            accountsVault[adminIdx].pass = "4469";
+            accountsVault[adminIdx].isAdmin = true;
+          } else {
+            accountsVault.push({ email: "kwilks@level99.com", handle: "@kwilks", pass: "4469", isAdmin: true });
+          }
+          localStorage.setItem(ACCOUNTS_STORAGE_KEY, JSON.stringify(accountsVault));
+        } else {
+          accountsVault = [
+            { email: "kwilks@level99.com", handle: "@kwilks", pass: "4469", isAdmin: true },
+            { email: "lead.installer@level99.com", handle: "@lead.installer", pass: "level99", isAdmin: false }
+          ];
+          localStorage.setItem(ACCOUNTS_STORAGE_KEY, JSON.stringify(accountsVault));
+        }
+
+        // Pre-fill saved credentials if Remember Me was checked previously
+        populateRememberedCredentials();
+
+        // Always show the lock screen (#authGate) on initial page load
+        currentUser = null;
+        document.getElementById('currentUserBadge').textContent = '@guest';
+        document.getElementById('authGate').classList.remove('hidden');
+      } catch (e) {
+        console.warn("Auth initialization error", e);
+      }
+    }
+
+    function switchAuthMode(mode) {
+      authMode = mode;
+      const loginTab = document.getElementById('authTabLogin');
+      const signupTab = document.getElementById('authTabSignup');
+      const submitText = document.getElementById('authSubmitText');
+      const hint = document.getElementById('passwordHint');
+      const passInput = document.getElementById('authPasswordInput');
+
+      if (mode === 'signup') {
+        signupTab.className = "flex-1 py-1.5 rounded-md bg-white text-slate-800 shadow-sm transition";
+        loginTab.className = "flex-1 py-1.5 rounded-md text-slate-500 hover:text-slate-800 transition";
+        submitText.textContent = "Create Account";
+        hint.classList.remove('hidden');
+        passInput.setAttribute('minlength', '4');
+      } else {
+        loginTab.className = "flex-1 py-1.5 rounded-md bg-white text-slate-800 shadow-sm transition";
+        signupTab.className = "flex-1 py-1.5 rounded-md text-slate-500 hover:text-slate-800 transition";
+        submitText.textContent = "Log In";
+        hint.classList.add('hidden');
+        passInput.removeAttribute('minlength');
+      }
+      hideAuthAlert();
+    }
+
+    function showAuthAlert(msg, isSuccess = false) {
+      const box = document.getElementById('authAlertBox');
+      box.textContent = msg;
+      box.className = `p-2.5 rounded-lg text-xs font-medium block ${isSuccess ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-red-50 text-red-800 border border-red-200'}`;
+    }
+
+    function hideAuthAlert() {
+      const box = document.getElementById('authAlertBox');
+      box.classList.add('hidden');
+    }
+
+    function handleAuthSubmit(e) {
+      e.preventDefault();
+      const email = document.getElementById('authEmailInput').value.trim().toLowerCase();
+      const pass = document.getElementById('authPasswordInput').value;
+      const remember = document.getElementById('rememberMeCheckbox').checked;
+
+      if (!email.endsWith('@level99.com')) {
+        showAuthAlert("Access Restricted: Only active @level99.com company accounts can sign up or log in.");
+        return;
+      }
+
+      const emailHandle = '@' + email.split('@')[0];
+
+      if (authMode === 'signup') {
+        if (pass.length < 4) {
+          showAuthAlert("Password must be at least 4 digits or characters long.");
+          return;
+        }
+
+        const existing = accountsVault.find(a => a.email === email);
+        if (existing) {
+          showAuthAlert("An account with this @level99.com email already exists. Please log in.");
+          return;
+        }
+
+        const isAdmin = (email === "kwilks@level99.com");
+        const newUser = { email, handle: emailHandle, pass, isAdmin };
+        accountsVault.push(newUser);
+        localStorage.setItem(ACCOUNTS_STORAGE_KEY, JSON.stringify(accountsVault));
+        
+        currentUser = { email, handle: emailHandle, isAdmin };
+        localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(currentUser));
+        
+        handleRememberMe(remember, email, pass);
+        logAuditAction("User Registered", `New team account created for ${emailHandle}`);
+        completeLogin();
+      } else {
+        const found = accountsVault.find(a => a.email === email && a.pass === pass);
+        if (!found) {
+          showAuthAlert("Invalid credentials. Please verify your @level99.com email & password, or switch to Sign Up.");
+          return;
+        }
+        currentUser = { email, handle: found.handle || emailHandle, isAdmin: !!found.isAdmin };
+        localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(currentUser));
+        
+        handleRememberMe(remember, email, pass);
+        logAuditAction("User Logged In", `${currentUser.handle} authenticated`);
+        completeLogin();
+      }
+    }
+
+    function handleRememberMe(remember, email, pass) {
+      if (remember) {
+        localStorage.setItem(REMEMBER_STORAGE_KEY, JSON.stringify({ email, pass }));
+      } else {
+        localStorage.removeItem(REMEMBER_STORAGE_KEY);
+      }
+    }
+
+    function completeLogin() {
+      document.getElementById('authGate').classList.add('hidden');
+      document.getElementById('currentUserBadge').textContent = currentUser.handle + (currentUser.isAdmin ? ' (Admin)' : '');
+      showToast(`Welcome, ${currentUser.handle}`);
+      lucide.createIcons();
+    }
+
+    function logoutUser() {
+      localStorage.removeItem(USER_STORAGE_KEY);
+      currentUser = null;
+      hideAuthAlert();
+      populateRememberedCredentials();
+      document.getElementById('authGate').classList.remove('hidden');
+      document.getElementById('currentUserBadge').textContent = "@guest";
+      showToast("Logged out & screen locked");
+      lucide.createIcons();
+    }
+
+    // ================= DATA PERSISTENCE =================
+    function loadData() {
+      try {
+        const savedData = localStorage.getItem(DB_STORAGE_KEY);
+        inventory = savedData ? JSON.parse(savedData) : JSON.parse(JSON.stringify(DEFAULT_SEED_DATA));
+
+        // Ensure "Check Out" tab exists even if loading from an older localStorage snapshot
+        if (!inventory["Check Out"]) {
+          inventory["Check Out"] = JSON.parse(JSON.stringify(DEFAULT_CHECKOUT_SEED));
+        }
+        
+        const savedCols = localStorage.getItem(COLS_STORAGE_KEY);
+        columns = savedCols ? JSON.parse(savedCols) : JSON.parse(JSON.stringify(DEFAULT_COLUMNS));
+
+        const savedCheckOutCols = localStorage.getItem(CHECKOUT_COLS_STORAGE_KEY);
+        checkOutColumns = savedCheckOutCols ? JSON.parse(savedCheckOutCols) : JSON.parse(JSON.stringify(DEFAULT_CHECKOUT_COLUMNS));
+
+        const savedTeam = localStorage.getItem(TEAM_MEMBERS_STORAGE_KEY);
+        teamMembers = savedTeam ? JSON.parse(savedTeam) : DEFAULT_TEAM_MEMBERS.slice();
+
+        const savedWidths = localStorage.getItem(WIDTHS_STORAGE_KEY);
+        colWidths = savedWidths ? Object.assign({}, DEFAULT_COL_WIDTHS, JSON.parse(savedWidths)) : Object.assign({}, DEFAULT_COL_WIDTHS);
+
+        const savedTitle = localStorage.getItem(TITLE_STORAGE_KEY);
+        if (savedTitle) sheetTitle = savedTitle;
+
+        const savedAudits = localStorage.getItem(AUDIT_STORAGE_KEY);
+        auditLogs = savedAudits ? JSON.parse(savedAudits) : [];
+
+        if (!currentTab || !inventory[currentTab]) {
+          currentTab = Object.keys(inventory)[0] || 'Wirerack Inventory';
+        }
+
+        // Expose state references on window for cloud sync
+        window.inventory = inventory;
+        window.sheetTitle = sheetTitle;
+        window.columns = columns;
+        window.checkOutColumns = checkOutColumns;
+        window.teamMembers = teamMembers;
+        window.auditLogs = auditLogs;
+        window.renderAll = renderAll;
+      } catch (err) {
+        console.error("Failed to load local database", err);
+        inventory = JSON.parse(JSON.stringify(DEFAULT_SEED_DATA));
+        columns = JSON.parse(JSON.stringify(DEFAULT_COLUMNS));
+        checkOutColumns = JSON.parse(JSON.stringify(DEFAULT_CHECKOUT_COLUMNS));
+        teamMembers = DEFAULT_TEAM_MEMBERS.slice();
+        colWidths = Object.assign({}, DEFAULT_COL_WIDTHS);
+      }
+    }
+
+    function saveData(triggerBroadcast = true) {
+      try {
+        localStorage.setItem(DB_STORAGE_KEY, JSON.stringify(inventory));
+        localStorage.setItem(COLS_STORAGE_KEY, JSON.stringify(columns));
+        localStorage.setItem(CHECKOUT_COLS_STORAGE_KEY, JSON.stringify(checkOutColumns));
+        localStorage.setItem(TEAM_MEMBERS_STORAGE_KEY, JSON.stringify(teamMembers));
+        localStorage.setItem(WIDTHS_STORAGE_KEY, JSON.stringify(colWidths));
+        localStorage.setItem(TITLE_STORAGE_KEY, sheetTitle);
+        localStorage.setItem(AUDIT_STORAGE_KEY, JSON.stringify(auditLogs));
+
+        // Push state to cloud for instant multi-device syncing
+        if (typeof window.pushToCloud === 'function') {
+          window.pushToCloud({
+            inventory: inventory,
+            columns: columns,
+            checkOutColumns: checkOutColumns,
+            teamMembers: teamMembers,
+            sheetTitle: sheetTitle,
+            auditLogs: auditLogs
+          });
+        }
+
+        if (triggerBroadcast && syncChannel) {
+          syncChannel.postMessage({
+            type: 'SYNC_UPDATE',
+            inventory,
+            columns,
+            checkOutColumns,
+            teamMembers,
+            colWidths,
+            sheetTitle,
+            timestamp: Date.now()
+          });
+        }
+      } catch (e) {
+        console.warn("Storage warning", e);
+      }
+    }
+
+    function logAuditAction(actionType, details, tab = currentTab) {
+      const userHandle = currentUser ? currentUser.handle : '@guest';
+      const entry = {
+        id: 'aud_' + Date.now() + Math.random().toString(36).substr(2, 4),
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' }),
+        user: userHandle,
+        action: actionType,
+        details: details,
+        tab: tab
+      };
+      auditLogs.unshift(entry);
+      if (auditLogs.length > 200) auditLogs.pop();
+      localStorage.setItem(AUDIT_STORAGE_KEY, JSON.stringify(auditLogs));
+    }
+
+    function initSync() {
+      try {
+        if ('BroadcastChannel' in window) {
+          syncChannel = new BroadcastChannel('level99_inventory_live_channel');
+          syncChannel.onmessage = (event) => {
+            if (event.data && event.data.type === 'SYNC_UPDATE') {
+              inventory = event.data.inventory;
+              columns = event.data.columns;
+              if (event.data.checkOutColumns) checkOutColumns = event.data.checkOutColumns;
+              if (event.data.teamMembers) teamMembers = event.data.teamMembers;
+              if (event.data.colWidths) colWidths = event.data.colWidths;
+              sheetTitle = event.data.sheetTitle;
+              renderAll();
+            }
+          };
+        }
+      } catch (e) {
+        console.warn("BroadcastChannel warning", e);
+      }
+    }
+
+    function refreshApp() {
+      loadData();
+      renderAll();
+      showToast("Inventory table refreshed");
+    }
+
+    function showToast(msg) {
+      const toast = document.getElementById('toastNotification');
+      const text = document.getElementById('toastMessage');
+      if (!toast || !text) return;
+      text.textContent = msg;
+      toast.classList.remove('translate-y-20', 'opacity-0');
+      toast.classList.add('translate-y-0', 'opacity-100');
+      setTimeout(() => {
+        toast.classList.add('translate-y-20', 'opacity-0');
+        toast.classList.remove('translate-y-0', 'opacity-100');
+      }, 2500);
+    }
+
+    // ================= RENDER LOGIC =================
+    function renderAll() {
+      renderSheetTitle();
+      renderTabs();
+      renderTableColgroup();
+      renderTableHeader();
+      renderTable();
+      renderWidthSlidersList();
+      lucide.createIcons();
+    }
+
+    function renderSheetTitle() {
+      document.getElementById('appTitleDisplay').textContent = sheetTitle;
+      document.title = `${sheetTitle} - Install Team`;
+    }
+
+    function editSheetTitle() {
+      openCustomDialog({
+        title: "Rename Inventory Sheet",
+        message: "Enter new inventory project name:",
+        showInput: true,
+        defaultValue: sheetTitle,
+        confirmText: "Save Title",
+        onConfirm: (newTitle) => {
+          if (newTitle && newTitle.trim()) {
+            const old = sheetTitle;
+            sheetTitle = newTitle.trim();
+            logAuditAction("Renamed Sheet", `Title changed from "${old}" to "${sheetTitle}"`);
+            saveData();
+            renderSheetTitle();
+            showToast("Sheet title updated");
+          }
+        }
+      });
+    }
+
+    function renderTabs() {
+      const container = document.getElementById('tabsContainer');
+      container.innerHTML = '';
+      const tabs = Object.keys(inventory);
+
+      if (!tabs.includes(currentTab)) {
+        currentTab = tabs[0] || '';
+      }
+
+      tabs.forEach(tab => {
+        const items = inventory[tab] || [];
+        const alertCount = isCheckOutTab(tab)
+          ? items.filter(it => isCheckOutOverdue(it) || isCheckOutMia(it)).length
+          : items.filter(it => isItemReorder(it) || isItemLowStock(it) || isInRouteDelayed(it)).length;
+        const isActive = tab === currentTab;
+
+        const btn = document.createElement('div');
+        btn.className = `flex items-center space-x-1 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer border transition ${
+          isActive 
+            ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs' 
+            : 'bg-white hover:bg-slate-100 text-slate-700 border-slate-200'
+        }`;
+        
+        btn.innerHTML = `
+          <span onclick="switchTab('${escapeAttr(tab)}')">${escapeHtml(tab)}</span>
+          <span class="text-[10px] px-1 rounded-full ${isActive ? 'bg-emerald-700 text-white' : 'bg-slate-100 text-slate-600'}">${items.length}</span>
+          ${alertCount > 0 ? `<span class="w-2 h-2 rounded-full bg-amber-500"></span>` : ''}
+          <button onclick="event.stopPropagation(); openTabModal('rename', '${escapeAttr(tab)}')" class="opacity-60 hover:opacity-100 p-0.5 ml-1">
+            <i data-lucide="more-vertical" class="w-3 h-3"></i>
+          </button>
+        `;
+        container.appendChild(btn);
+      });
+    }
+
+    function switchTab(tab) {
+      currentTab = tab;
+      renderTabs();
+      renderTableColgroup();
+      renderTableHeader();
+      renderTable();
+      renderWidthSlidersList();
+      lucide.createIcons();
+    }
+
+    // Helper Status Checks (Check Out Tab)
+    function isCheckOutMia(item) {
+      return item && item.status === 'mia';
+    }
+
+    function isCheckOutReturned(item) {
+      return item && item.status === 'returned';
+    }
+
+    function isCheckOutOverdue(item) {
+      if (!item || isCheckOutMia(item) || isCheckOutReturned(item)) return false;
+      if (!item.dueDate) return false;
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const parts = item.dueDate.split('-').map(Number);
+      if (parts.length !== 3) return false;
+      const due = new Date(parts[0], parts[1] - 1, parts[2]);
+      due.setHours(0, 0, 0, 0);
+      return today > due;
+    }
+
+    // Helper Status Checks (Standard Inventory Tabs)
+    function isItemReorder(item) {
+      const threshold = item.reorderThreshold || item.threshold;
+      if (threshold === 'never') return false;
+      const max = Number(item.total) || 1;
+      const rem = Number(item.remaining) || 0;
+      const th = parseFloat(threshold) || 0.25;
+      return (rem / max) <= th;
+    }
+
+    function isItemLowStock(item) {
+      const lowTh = item.lowThreshold;
+      if (lowTh === 'never') return false;
+      const max = Number(item.total) || 1;
+      const rem = Number(item.remaining) || 0;
+      const th = parseFloat(lowTh || 0.50);
+      return (rem / max) <= th;
+    }
+
+    function isItemNeverOut(item) {
+      const reorderTh = item.reorderThreshold || item.threshold;
+      return reorderTh === 'never' && (Number(item.remaining) || 0) === 0;
+    }
+
+    function hasActiveInRoute(item) {
+      return !!(item.inRoute && item.inRoute.active);
+    }
+
+    function isInRouteDelayed(item) {
+      if (!hasActiveInRoute(item) || !item.inRoute.expectedDelivery) return false;
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const [year, month, day] = item.inRoute.expectedDelivery.split('-').map(Number);
+      const deliveryDate = new Date(year, month - 1, day);
+      deliveryDate.setHours(0, 0, 0, 0);
+      return today > deliveryDate;
+    }
+
+    function formatToMMDDYYYY(dateStr) {
+      if (!dateStr) return '';
+      const parts = dateStr.split('-');
+      if (parts.length === 3) {
+        return `${parts[1]}/${parts[2]}/${parts[0]}`;
+      }
+      return dateStr;
+    }
+
+    // ================= COLUMN WIDTHS & RESIZING =================
+    function renderTableColgroup() {
+      const colgroup = document.getElementById('tableColgroup');
+      colgroup.innerHTML = '';
+      const activeCols = getActiveColumns();
+      activeCols.forEach(col => {
+        if (!col.visible) return;
+        if (col.id === 'notes' && hideNotes) return;
+        const w = colWidths[col.id] || DEFAULT_COL_WIDTHS[col.id] || 120;
+        const colEl = document.createElement('col');
+        colEl.id = `colElem_${col.id}`;
+        colEl.style.width = `${w}px`;
+        colgroup.appendChild(colEl);
+      });
+    }
+
+    function renderTableHeader() {
+      const tr = document.getElementById('tableHeader');
+      let html = '<tr class="sheet-header-cell">';
+      const activeCols = getActiveColumns();
+      activeCols.forEach(col => {
+        if (!col.visible) return;
+        if (col.id === 'notes' && hideNotes) return;
+        const w = colWidths[col.id] || DEFAULT_COL_WIDTHS[col.id] || 120;
+        html += `
+          <th id="th_${col.id}" style="width: ${w}px;" class="py-2.5 px-3 text-[11px] text-slate-600 font-bold border-r border-slate-200 tracking-wider relative select-none">
+            <span class="truncate block">${escapeHtml(col.label)}</span>
+            <div class="resizer-handle" onmousedown="startResizing(event, '${col.id}')" ontouchstart="startResizingTouch(event, '${col.id}')"></div>
+          </th>
+        `;
+      });
+      html += '</tr>';
+      tr.innerHTML = html;
+    }
+
+    function startResizing(e, colId) {
+      e.preventDefault();
+      activeResizingCol = colId;
+      startX = e.pageX;
+      startWidth = colWidths[colId] || DEFAULT_COL_WIDTHS[colId] || 120;
+      document.body.style.cursor = 'col-resize';
+      document.addEventListener('mousemove', handleResizing);
+      document.addEventListener('mouseup', stopResizing);
+    }
+
+    function handleResizing(e) {
+      if (!activeResizingCol) return;
+      const diff = e.pageX - startX;
+      const newWidth = Math.max(50, startWidth + diff);
+      colWidths[activeResizingCol] = newWidth;
+      
+      const colEl = document.getElementById(`colElem_${activeResizingCol}`);
+      if (colEl) colEl.style.width = `${newWidth}px`;
+      const th = document.getElementById(`th_${activeResizingCol}`);
+      if (th) th.style.width = `${newWidth}px`;
+    }
+
+    function stopResizing() {
+      if (activeResizingCol) {
+        document.body.style.cursor = 'default';
+        document.removeEventListener('mousemove', handleResizing);
+        document.removeEventListener('mouseup', stopResizing);
+        saveData();
+        renderWidthSlidersList();
+        activeResizingCol = null;
+      }
+    }
+
+    function startResizingTouch(e, colId) {
+      if (e.touches.length !== 1) return;
+      activeResizingCol = colId;
+      startX = e.touches[0].pageX;
+      startWidth = colWidths[colId] || DEFAULT_COL_WIDTHS[colId] || 120;
+      document.addEventListener('touchmove', handleResizingTouch, { passive: false });
+      document.addEventListener('touchend', stopResizingTouch);
+    }
+
+    function handleResizingTouch(e) {
+      if (!activeResizingCol || e.touches.length !== 1) return;
+      e.preventDefault();
+      const diff = e.touches[0].pageX - startX;
+      const newWidth = Math.max(50, startWidth + diff);
+      colWidths[activeResizingCol] = newWidth;
+      const colEl = document.getElementById(`colElem_${activeResizingCol}`);
+      if (colEl) colEl.style.width = `${newWidth}px`;
+      const th = document.getElementById(`th_${activeResizingCol}`);
+      if (th) th.style.width = `${newWidth}px`;
+    }
+
+    function stopResizingTouch() {
+      document.removeEventListener('touchmove', handleResizingTouch);
+      document.removeEventListener('touchend', stopResizingTouch);
+      if (activeResizingCol) {
+        saveData();
+        renderWidthSlidersList();
+        activeResizingCol = null;
+      }
+    }
+
+    // Width Sliders Popover Controls
+    function toggleWidthSlidersPopover() {
+      const popover = document.getElementById('widthSlidersPopover');
+      popover.classList.toggle('hidden');
+    }
+
+    function renderWidthSlidersList() {
+      const container = document.getElementById('widthSlidersList');
+      if (!container) return;
+      container.innerHTML = '';
+
+      const activeCols = getActiveColumns();
+      activeCols.forEach(col => {
+        if (!col.visible) return;
+        const currentW = colWidths[col.id] || DEFAULT_COL_WIDTHS[col.id] || 120;
+        const minW = 50;
+        const maxW = col.id === 'item' ? 600 : 400;
+
+        const row = document.createElement('div');
+        row.className = "flex items-center justify-between space-x-2 text-slate-700";
+        row.innerHTML = `
+          <span class="text-[11px] font-semibold truncate w-24">${escapeHtml(col.label)}</span>
+          <input 
+            type="range" 
+            min="${minW}" 
+            max="${maxW}" 
+            value="${currentW}" 
+            oninput="handleSliderWidthChange('${col.id}', this.value)"
+            class="flex-1 accent-emerald-600 h-1 bg-slate-200 rounded cursor-pointer"
+          />
+          <span id="sliderVal_${col.id}" class="text-[10px] font-mono w-10 text-right">${currentW}px</span>
+        `;
+        container.appendChild(row);
+      });
+    }
+
+    function handleSliderWidthChange(colId, val) {
+      const px = parseInt(val, 10);
+      colWidths[colId] = px;
+      const label = document.getElementById(`sliderVal_${colId}`);
+      if (label) label.textContent = `${px}px`;
+
+      const colEl = document.getElementById(`colElem_${colId}`);
+      if (colEl) colEl.style.width = `${px}px`;
+      const th = document.getElementById(`th_${colId}`);
+      if (th) th.style.width = `${px}px`;
+
+      saveData();
+    }
+
+    function resetColumnWidths() {
+      colWidths = Object.assign({}, DEFAULT_COL_WIDTHS);
+      saveData();
+      renderTableColgroup();
+      renderTableHeader();
+      renderWidthSlidersList();
+      showToast("Column widths reset to defaults");
+    }
+
+    // ================= TABLE ROWS & FILTERING =================
+    function getSortedAndFilteredItems() {
+      let items = (inventory[currentTab] || []).slice();
+      const checkOutMode = isCheckOutTab(currentTab);
+
+      if (searchQuery) {
+        const q = searchQuery.toLowerCase();
+        items = items.filter(it => 
+          (it.name || '').toLowerCase().includes(q) ||
+          (it.person || '').toLowerCase().includes(q) ||
+          (it.location || '').toLowerCase().includes(q) ||
+          (it.notes || '').toLowerCase().includes(q)
+        );
+      }
+
+      if (filterLowStockOnly) {
+        if (checkOutMode) {
+          // Show Yellow (Overdue) and Red (MIA) rows in Check Out tab
+          items = items.filter(it => isCheckOutOverdue(it) || isCheckOutMia(it));
+        } else {
+          items = items.filter(it => isItemReorder(it) || isItemLowStock(it) || isInRouteDelayed(it) || ((it.reorderThreshold || it.threshold) !== 'never' && (Number(it.remaining) || 0) === 0));
+        }
+      }
+
+      if (hideNeverOos) {
+        if (checkOutMode) {
+          // Hide Blue (Returned) rows in Check Out tab
+          items = items.filter(it => !isCheckOutReturned(it));
+        } else {
+          items = items.filter(it => !isItemNeverOut(it) && !hasActiveInRoute(it));
+        }
+      }
+
+      items.sort((a, b) => {
+        if (currentSort === 'alpha') return (a.name || '').localeCompare(b.name || '');
+        if (currentSort === 'alpha-desc') return (b.name || '').localeCompare(a.name || '');
+        if (currentSort === 'date-new') return (b.dateAdded || 0) - (a.dateAdded || 0);
+        if (currentSort === 'date-old') return (a.dateAdded || 0) - (b.dateAdded || 0);
+        if (currentSort === 'updated-new') {
+          const dA = checkOutMode ? (a.checkoutDate || '') : (a.updated || '');
+          const dB = checkOutMode ? (b.checkoutDate || '') : (b.updated || '');
+          return dB.localeCompare(dA);
+        }
+        if (currentSort === 'updated-old') {
+          const dA = checkOutMode ? (a.checkoutDate || '') : (a.updated || '');
+          const dB = checkOutMode ? (b.checkoutDate || '') : (b.updated || '');
+          return dA.localeCompare(dB);
+        }
+        if (currentSort === 'stock-low') {
+          if (checkOutMode) {
+            const rank = (it) => isCheckOutMia(it) ? 0 : isCheckOutOverdue(it) ? 1 : !isCheckOutReturned(it) ? 2 : 3;
+            return rank(a) - rank(b);
+          }
+          const ratioA = (Number(a.remaining) || 0) / (Number(a.total) || 1);
+          const ratioB = (Number(b.remaining) || 0) / (Number(b.total) || 1);
+          return ratioA - ratioB;
+        }
+        if (currentSort === 'stock-high') {
+          if (checkOutMode) {
+            const rank = (it) => isCheckOutMia(it) ? 0 : isCheckOutOverdue(it) ? 1 : !isCheckOutReturned(it) ? 2 : 3;
+            return rank(b) - rank(a);
+          }
+          const ratioA = (Number(a.remaining) || 0) / (Number(a.total) || 1);
+          const ratioB = (Number(b.remaining) || 0) / (Number(b.total) || 1);
+          return ratioB - ratioA;
+        }
+        return 0;
+      });
+
+      return items;
+    }
+
+    function renderTable() {
+      if (isCheckOutTab(currentTab)) {
+        renderCheckOutTable();
+        return;
+      }
+
+      const items = getSortedAndFilteredItems();
+      const tbody = document.getElementById('tableBody');
+      const mobileContainer = document.getElementById('mobileCardContainer');
+      const empty = document.getElementById('emptyState');
+
+      tbody.innerHTML = '';
+      mobileContainer.innerHTML = '';
+
+      if (items.length === 0) {
+        empty.classList.remove('hidden');
+        return;
+      }
+      empty.classList.add('hidden');
+
+      items.forEach((item) => {
+        const rem = Number(item.remaining) || 0;
+        const tot = Number(item.total) || 1;
+        const pct = Math.round((rem / tot) * 100);
+        const reorderAlert = isItemReorder(item);
+        const lowStockReminder = isItemLowStock(item);
+        const neverOut = isItemNeverOut(item);
+        const inRoute = hasActiveInRoute(item);
+        const inRouteDelayed = isInRouteDelayed(item);
+
+        let rowClass = 'bg-emerald-50/50 hover:bg-emerald-100/60 transition border-b border-slate-200 text-slate-800';
+        let statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">IN STOCK (${pct}%)</span>`;
+
+        if (inRoute) {
+          if (inRouteDelayed) {
+            rowClass = 'bg-rose-100/95 hover:bg-rose-200/90 border-b border-rose-300 text-slate-900 font-medium';
+            statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-600 text-white animate-pulse shadow-xs">Delivery delayed (MIA)</span>`;
+          } else {
+            const etaFormatted = formatToMMDDYYYY(item.inRoute.expectedDelivery);
+            rowClass = 'bg-sky-50/90 hover:bg-sky-100/80 border-b border-sky-300 text-slate-900';
+            statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-600 text-white shadow-xs">Restock ETA [${etaFormatted}]</span>`;
+          }
+        } else if (neverOut) {
+          rowClass = 'bg-sky-50/80 hover:bg-sky-100/70 border-b border-sky-200 text-slate-800';
+          statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-200 text-sky-900 border border-sky-300">OUT (NO REORDER)</span>`;
+        } else if (rem === 0) {
+          rowClass = 'bg-rose-100/95 hover:bg-rose-200/90 border-b border-rose-300 text-slate-900';
+          statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-600 text-white animate-pulse">EMPTY (0%)</span>`;
+        } else if (reorderAlert) {
+          rowClass = 'bg-rose-100/90 hover:bg-rose-200/80 border-b border-rose-300 text-slate-900 font-medium';
+          statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-600 text-white shadow-xs">RE-ORDER (${pct}%)</span>`;
+        } else if (lowStockReminder) {
+          rowClass = 'bg-amber-100/85 hover:bg-amber-200/80 border-b border-amber-300 text-slate-900';
+          statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-400 text-amber-950 border border-amber-500">LOW STOCK (${pct}%)</span>`;
+        }
+
+        // DESKTOP ROW
+        const tr = document.createElement('tr');
+        tr.className = rowClass;
+
+        let rowHtml = '';
+        columns.forEach(col => {
+          if (!col.visible) return;
+          if (col.id === 'notes' && hideNotes) return;
+
+          if (col.id === 'counter') {
+            rowHtml += `
+              <td class="sheet-cell py-1.5 px-2 whitespace-nowrap overflow-hidden">
+                <div class="inline-flex items-center bg-white border border-slate-300 rounded-md shadow-2xs overflow-hidden">
+                  <button onclick="adjustCount('${item.id}', -1)" class="touch-btn px-1.5 py-0.5 text-slate-600 hover:bg-slate-100 active:bg-slate-200 font-bold border-r border-slate-200 transition text-xs leading-none">－</button>
+                  <span onclick="openItemModal('edit', '${item.id}')" title="Click to edit counts" class="cursor-pointer font-mono-num font-bold px-1.5 py-0.5 text-[11px] text-slate-800 hover:text-emerald-600 leading-none">
+                    ${rem} / ${tot}
+                  </span>
+                  <button onclick="adjustCount('${item.id}', 1)" class="touch-btn px-1.5 py-0.5 text-slate-600 hover:bg-slate-100 active:bg-slate-200 font-bold border-l border-slate-200 transition text-xs leading-none">＋</button>
+                </div>
+              </td>
+            `;
+          } else if (col.id === 'status') {
+            rowHtml += `<td class="sheet-cell py-2 px-3 whitespace-nowrap font-medium overflow-hidden">${statusBadge}</td>`;
+          } else if (col.id === 'item') {
+            rowHtml += `
+              <td class="sheet-cell py-2 px-3 font-semibold text-slate-800 break-words">
+                <span onclick="openItemModal('edit', '${item.id}')" class="cursor-pointer hover:underline text-emerald-950 font-medium">${escapeHtml(item.name)}</span>
+                ${inRoute ? `<div class="text-[10px] font-normal text-sky-800 flex items-center space-x-1 mt-0.5">
+                  <i data-lucide="truck" class="w-3 h-3 text-sky-600"></i>
+                  <span>${item.inRoute.quantity} units on order (${formatToMMDDYYYY(item.inRoute.dateOrdered)})</span>
+                </div>` : ''}
+              </td>
+            `;
+          } else if (col.id === 'photo') {
+            rowHtml += `
+              <td class="sheet-cell py-2 px-3 text-center overflow-hidden">
+                ${item.photo 
+                  ? `<img src="${item.photo}" onclick="openLightbox('${item.photo}', '${escapeAttr(item.name)}')" class="w-8 h-8 rounded-md object-cover border border-slate-200 cursor-pointer hover:scale-105 transition mx-auto" />` 
+                  : `<button onclick="openItemModal('edit', '${item.id}')" class="text-slate-300 hover:text-slate-500"><i data-lucide="image-plus" class="w-4 h-4 mx-auto"></i></button>`
+                }
+              </td>
+            `;
+          } else if (col.id === 'location') {
+            rowHtml += `<td class="sheet-cell py-2 px-3 text-slate-600 font-medium break-words">${escapeHtml(item.location) || '—'}</td>`;
+          } else if (col.id === 'locationPhoto') {
+            rowHtml += `
+              <td class="sheet-cell py-2 px-3 text-center overflow-hidden">
+                ${item.locationPhoto 
+                  ? `<img src="${item.locationPhoto}" onclick="openLightbox('${item.locationPhoto}', 'Location: ${escapeAttr(item.location || item.name)}')" class="w-8 h-8 rounded-md object-cover border border-slate-200 cursor-pointer hover:scale-105 transition mx-auto" />` 
+                  : `<button onclick="openItemModal('edit', '${item.id}')" class="text-slate-300 hover:text-slate-500"><i data-lucide="camera" class="w-4 h-4 mx-auto"></i></button>`
+                }
+              </td>
+            `;
+          } else if (col.id === 'notes') {
+            rowHtml += `<td class="sheet-cell py-2 px-3 text-slate-500 break-words" title="${escapeAttr(item.notes || '')}">${escapeHtml(item.notes) || '—'}</td>`;
+          } else if (col.id === 'updated') {
+            rowHtml += `
+              <td class="sheet-cell py-2 px-3 text-slate-500 font-mono text-[11px] cursor-pointer hover:text-emerald-700 hover:underline overflow-hidden whitespace-nowrap" onclick="openItemModal('edit', '${item.id}')">
+                ${item.updated || '—'}
+              </td>
+            `;
+          } else if (col.id === 'actions') {
+            rowHtml += `
+              <td class="sheet-cell py-1.5 px-2 text-right whitespace-nowrap overflow-hidden">
+                <div class="inline-flex items-center space-x-1">
+                  <button 
+                    onclick="openRestockInRouteModal('${item.id}')" 
+                    title="Restock In Route" 
+                    class="p-1 rounded-md border transition ${inRoute ? 'bg-sky-600 text-white border-sky-700 hover:bg-sky-700' : 'text-sky-700 bg-sky-50 border-sky-200 hover:bg-sky-100'}"
+                  >
+                    <i data-lucide="truck" class="w-3 h-3"></i>
+                  </button>
+                  <button 
+                    onclick="completeRestock('${item.id}')" 
+                    title="Restock Completed" 
+                    class="p-1 text-emerald-700 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 rounded-md transition"
+                  >
+                    <i data-lucide="package-check" class="w-3 h-3"></i>
+                  </button>
+                  <button 
+                    onclick="openItemModal('edit', '${item.id}')" 
+                    title="Edit Item" 
+                    class="p-1 text-slate-500 bg-white border border-slate-200 hover:bg-slate-100 rounded-md transition"
+                  >
+                    <i data-lucide="edit-3" class="w-3 h-3"></i>
+                  </button>
+                </div>
+              </td>
+            `;
+          }
+        });
+
+        tr.innerHTML = rowHtml;
+        tbody.appendChild(tr);
+
+        // MOBILE CARD (COMPACT & TOUCH OPTIMIZED)
+        const card = document.createElement('div');
+        const cardBg = inRoute
+          ? (inRouteDelayed ? 'bg-rose-50 border-rose-300' : 'bg-sky-50 border-sky-300')
+          : neverOut 
+            ? 'bg-sky-50/80 border-sky-200' 
+            : (rem === 0 || reorderAlert)
+              ? 'bg-rose-50 border-rose-300'
+              : lowStockReminder 
+                ? 'bg-amber-50 border-amber-300' 
+                : 'bg-white border-slate-200';
+
+        card.className = `p-2.5 rounded-xl border ${cardBg} shadow-xs space-y-2`;
+        card.innerHTML = `
+          <!-- Top Row: Name, Location, Badges, and Thumbnail -->
+          <div class="flex items-start justify-between gap-2">
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center gap-1.5 flex-wrap mb-1">
+                ${statusBadge}
+                ${item.location ? `<span class="inline-flex items-center text-[10px] bg-slate-100 font-semibold text-slate-600 px-2 py-0.5 rounded-md border border-slate-200"><i data-lucide="map-pin" class="w-2.5 h-2.5 mr-1 text-slate-400"></i>${escapeHtml(item.location)}</span>` : ''}
+              </div>
+              <h4 onclick="openItemModal('edit', '${item.id}')" class="font-bold text-slate-900 text-sm leading-snug cursor-pointer hover:underline text-emerald-950">${escapeHtml(item.name)}</h4>
+              ${inRoute ? `<div class="text-[11px] font-medium text-sky-800 flex items-center space-x-1.5 mt-1 bg-sky-100/70 px-2 py-1 rounded-md border border-sky-200">
+                <i data-lucide="truck" class="w-3 h-3 text-sky-600 shrink-0"></i>
+                <span>${item.inRoute.quantity} units ordered (ETA: ${formatToMMDDYYYY(item.inRoute.expectedDelivery)})</span>
+              </div>` : ''}
+              ${item.notes ? `<p class="text-[11px] text-slate-500 mt-1 line-clamp-2">${escapeHtml(item.notes)}</p>` : ''}
+            </div>
+
+            ${item.photo ? `
+              <div class="shrink-0">
+                <img src="${item.photo}" onclick="openLightbox('${item.photo}', '${escapeAttr(item.name)}')" class="w-10 h-10 rounded-lg object-cover border border-slate-200 shadow-2xs cursor-pointer" />
+              </div>
+            ` : ''}
+          </div>
+
+          <!-- Bottom Row: Compact Stepper and Action Buttons -->
+          <div class="flex items-center justify-between flex-wrap gap-1.5 pt-2 border-t border-slate-200/70">
+            <!-- Compact Stepper -->
+            <div class="inline-flex items-center bg-white border border-slate-300 rounded-lg shadow-2xs overflow-hidden shrink-0">
+              <button onclick="adjustCount('${item.id}', -1)" class="touch-btn px-2 py-1 text-slate-700 active:bg-slate-200 font-bold border-r border-slate-200 text-xs leading-none">－</button>
+              <span onclick="openItemModal('edit', '${item.id}')" class="font-mono-num font-bold px-1.5 py-1 text-[11px] text-slate-900 text-center min-w-[46px] cursor-pointer hover:text-emerald-700 leading-none">
+                ${rem} / ${tot}
+              </span>
+              <button onclick="adjustCount('${item.id}', 1)" class="touch-btn px-2 py-1 text-slate-700 active:bg-slate-200 font-bold border-l border-slate-200 text-xs leading-none">＋</button>
+            </div>
+
+            <!-- Compact Action Buttons -->
+            <div class="flex items-center space-x-1 ml-auto">
+              <button 
+                onclick="openRestockInRouteModal('${item.id}')" 
+                title="Restock In Route" 
+                class="px-2 py-1 text-[11px] leading-tight font-semibold rounded-lg border transition flex items-center space-x-1 ${inRoute ? 'bg-sky-600 text-white border-sky-700' : 'bg-sky-50 text-sky-700 border-sky-200 active:bg-sky-100'}"
+              >
+                <i data-lucide="truck" class="w-3 h-3"></i>
+                <span>Route</span>
+              </button>
+              <button 
+                onclick="completeRestock('${item.id}')" 
+                title="Restock Completed" 
+                class="px-2 py-1 text-[11px] leading-tight font-semibold bg-emerald-600 active:bg-emerald-700 text-white rounded-lg shadow-2xs flex items-center space-x-1"
+              >
+                <i data-lucide="package-check" class="w-3 h-3"></i>
+                <span>Restock</span>
+              </button>
+              <button 
+                onclick="openItemModal('edit', '${item.id}')" 
+                title="Edit Item" 
+                class="p-1 text-slate-600 bg-white border border-slate-200 rounded-lg active:bg-slate-100"
+              >
+                <i data-lucide="edit-3" class="w-3 h-3"></i>
+              </button>
+            </div>
+          </div>
+        `;
+        mobileContainer.appendChild(card);
+      });
+    }
+
+    // ================= CHECK OUT TAB RENDER & ACTIONS =================
+    function buildPersonSelectOptions(selectedPerson) {
+      const list = teamMembers.slice();
+      if (selectedPerson && !list.includes(selectedPerson)) {
+        list.unshift(selectedPerson);
+      }
+      let opts = list.map(person =>
+        `<option value="${escapeAttr(person)}" ${person === selectedPerson ? 'selected' : ''}>${escapeHtml(person)}</option>`
+      ).join('');
+      opts += `<option value="__ADD_NEW_PERSON__">+ Add New Person...</option>`;
+      return opts;
+    }
+
+    function renderCheckOutTable() {
+      const items = getSortedAndFilteredItems();
+      const tbody = document.getElementById('tableBody');
+      const mobileContainer = document.getElementById('mobileCardContainer');
+      const empty = document.getElementById('emptyState');
+
+      tbody.innerHTML = '';
+      mobileContainer.innerHTML = '';
+
+      if (items.length === 0) {
+        empty.classList.remove('hidden');
+        return;
+      }
+      empty.classList.add('hidden');
+
+      items.forEach((item) => {
+        const mia = isCheckOutMia(item);
+        const returned = isCheckOutReturned(item);
+        const overdue = isCheckOutOverdue(item);
+
+        // Default Checked Out = Green
+        let rowClass = 'bg-emerald-50/50 hover:bg-emerald-100/60 transition border-b border-slate-200 text-slate-800';
+        let statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">CHECKED OUT</span>`;
+
+        if (mia) {
+          // MIA = Red
+          rowClass = 'bg-rose-100/95 hover:bg-rose-200/90 border-b border-rose-300 text-slate-900 font-medium';
+          statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-600 text-white animate-pulse shadow-xs">MIA</span>`;
+        } else if (returned) {
+          // Returned = Blue
+          rowClass = 'bg-sky-50/90 hover:bg-sky-100/80 border-b border-sky-300 text-slate-900';
+          statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-600 text-white shadow-xs">RETURNED</span>`;
+        } else if (overdue) {
+          // Overdue = Yellow
+          rowClass = 'bg-amber-100/85 hover:bg-amber-200/80 border-b border-amber-300 text-slate-900';
+          statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-400 text-amber-950 border border-amber-500">OVERDUE</span>`;
+        }
+
+        const tr = document.createElement('tr');
+        tr.className = rowClass;
+
+        let rowHtml = '';
+        checkOutColumns.forEach(col => {
+          if (!col.visible) return;
+
+          if (col.id === 'person') {
+            rowHtml += `
+              <td class="sheet-cell py-2 px-3 whitespace-nowrap overflow-hidden">
+                <div class="flex items-center space-x-1">
+                  <select onchange="handleRowPersonChange('${item.id}', this)" class="w-full px-2 py-1 text-xs font-semibold bg-white border border-slate-300 rounded-lg text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                    ${buildPersonSelectOptions(item.person)}
+                  </select>
+                  <button onclick="promptAddNewTeamMember(null, '${item.id}')" title="Add Person to Team List" class="p-1 text-emerald-700 bg-white hover:bg-emerald-50 border border-slate-300 rounded-lg shrink-0 transition">
+                    <i data-lucide="user-plus" class="w-3.5 h-3.5"></i>
+                  </button>
+                </div>
+              </td>
+            `;
+          } else if (col.id === 'item') {
+            rowHtml += `
+              <td class="sheet-cell py-2 px-3 font-semibold text-slate-800 break-words">
+                <div class="flex items-center flex-wrap gap-1.5">
+                  <span onclick="openCheckOutModal('edit', '${item.id}')" class="cursor-pointer hover:underline text-emerald-950 font-semibold">${escapeHtml(item.name)}</span>
+                  ${statusBadge}
+                </div>
+                ${item.notes ? `<p class="text-[11px] font-normal text-slate-500 mt-0.5">${escapeHtml(item.notes)}</p>` : ''}
+              </td>
+            `;
+          } else if (col.id === 'photo') {
+            rowHtml += `
+              <td class="sheet-cell py-2 px-3 text-center overflow-hidden">
+                ${item.photo 
+                  ? `<img src="${item.photo}" onclick="openLightbox('${item.photo}', '${escapeAttr(item.name)}')" class="w-8 h-8 rounded-md object-cover border border-slate-200 cursor-pointer hover:scale-105 transition mx-auto" />` 
+                  : `<button onclick="openCheckOutModal('edit', '${item.id}')" class="text-slate-300 hover:text-slate-500"><i data-lucide="image-plus" class="w-4 h-4 mx-auto"></i></button>`
+                }
+              </td>
+            `;
+          } else if (col.id === 'checkoutDate') {
+            rowHtml += `
+              <td class="sheet-cell py-2 px-3 whitespace-nowrap overflow-hidden">
+                <input type="date" value="${escapeAttr(item.checkoutDate || '')}" onchange="updateCheckOutDate('${item.id}', 'checkoutDate', this.value)" class="px-2 py-1 text-xs font-mono bg-white border border-slate-300 rounded-lg text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+              </td>
+            `;
+          } else if (col.id === 'dueDate') {
+            rowHtml += `
+              <td class="sheet-cell py-2 px-3 whitespace-nowrap overflow-hidden">
+                <input type="date" value="${escapeAttr(item.dueDate || '')}" onchange="updateCheckOutDate('${item.id}', 'dueDate', this.value)" class="px-2 py-1 text-xs font-mono bg-white border border-slate-300 rounded-lg text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+              </td>
+            `;
+          } else if (col.id === 'actions') {
+            rowHtml += `
+              <td class="sheet-cell py-1.5 px-2 text-right whitespace-nowrap overflow-hidden">
+                <div class="inline-flex items-center space-x-1">
+                  <button 
+                    onclick="setCheckOutItemStatus('${item.id}', 'mia')" 
+                    title="Mark MIA (Red)" 
+                    class="px-1.5 py-0.5 rounded-md border text-[10px] font-bold transition ${mia ? 'bg-rose-600 text-white border-rose-700' : 'text-rose-700 bg-rose-50 border-rose-200 hover:bg-rose-100'}"
+                  >
+                    MIA
+                  </button>
+                  <button 
+                    onclick="setCheckOutItemStatus('${item.id}', 'returned')" 
+                    title="Mark Returned (Blue)" 
+                    class="px-1.5 py-0.5 rounded-md border text-[10px] font-bold transition ${returned ? 'bg-sky-600 text-white border-sky-700' : 'text-sky-700 bg-sky-50 border-sky-200 hover:bg-sky-100'}"
+                  >
+                    Returned
+                  </button>
+                  <button 
+                    onclick="openCheckOutModal('edit', '${item.id}')" 
+                    title="Edit Check Out" 
+                    class="p-1 text-slate-500 bg-white border border-slate-200 hover:bg-slate-100 rounded-md transition"
+                  >
+                    <i data-lucide="edit-3" class="w-3 h-3"></i>
+                  </button>
+                </div>
+              </td>
+            `;
+          }
+        });
+
+        tr.innerHTML = rowHtml;
+        tbody.appendChild(tr);
+
+        // MOBILE CARD FOR CHECK OUT TAB
+        const card = document.createElement('div');
+        const cardBg = mia
+          ? 'bg-rose-50 border-rose-300'
+          : returned
+            ? 'bg-sky-50 border-sky-300'
+            : overdue
+              ? 'bg-amber-50 border-amber-300'
+              : 'bg-emerald-50/70 border-emerald-300';
+
+        card.className = `p-2.5 rounded-xl border ${cardBg} shadow-xs space-y-2`;
+        card.innerHTML = `
+          <div class="flex items-start justify-between gap-2">
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center gap-1.5 flex-wrap mb-1">
+                ${statusBadge}
+              </div>
+              <h4 onclick="openCheckOutModal('edit', '${item.id}')" class="font-bold text-slate-900 text-sm leading-snug cursor-pointer hover:underline text-emerald-950">${escapeHtml(item.name)}</h4>
+              ${item.notes ? `<p class="text-[11px] text-slate-500 mt-1 line-clamp-2">${escapeHtml(item.notes)}</p>` : ''}
+            </div>
+            ${item.photo ? `
+              <div class="shrink-0">
+                <img src="${item.photo}" onclick="openLightbox('${item.photo}', '${escapeAttr(item.name)}')" class="w-10 h-10 rounded-lg object-cover border border-slate-200 shadow-2xs cursor-pointer" />
+              </div>
+            ` : ''}
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-1.5 pt-1">
+            <div>
+              <label class="block text-[10px] font-bold uppercase text-slate-500 mb-0.5">Person</label>
+              <div class="flex items-center space-x-1">
+                <select onchange="handleRowPersonChange('${item.id}', this)" class="w-full px-1.5 py-1 text-[11px] font-semibold bg-white border border-slate-300 rounded-lg text-slate-800">
+                  ${buildPersonSelectOptions(item.person)}
+                </select>
+                <button onclick="promptAddNewTeamMember(null, '${item.id}')" class="p-1 text-emerald-700 bg-white border border-slate-300 rounded-lg shrink-0">
+                  <i data-lucide="user-plus" class="w-3 h-3"></i>
+                </button>
+              </div>
+            </div>
+            <div class="grid grid-cols-2 gap-1.5">
+              <div>
+                <label class="block text-[10px] font-bold uppercase text-slate-500 mb-0.5">Checked Out</label>
+                <input type="date" value="${escapeAttr(item.checkoutDate || '')}" onchange="updateCheckOutDate('${item.id}', 'checkoutDate', this.value)" class="w-full px-1.5 py-1 text-[11px] font-mono bg-white border border-slate-300 rounded-lg" />
+              </div>
+              <div>
+                <label class="block text-[10px] font-bold uppercase text-slate-500 mb-0.5">Due Date</label>
+                <input type="date" value="${escapeAttr(item.dueDate || '')}" onchange="updateCheckOutDate('${item.id}', 'dueDate', this.value)" class="w-full px-1.5 py-1 text-[11px] font-mono bg-white border border-slate-300 rounded-lg" />
+              </div>
+            </div>
+          </div>
+
+          <div class="flex items-center justify-end flex-wrap gap-1 pt-2 border-t border-slate-200/70">
+            <button onclick="setCheckOutItemStatus('${item.id}', 'mia')" class="px-2 py-1 rounded-lg border text-[11px] leading-tight font-bold transition ${mia ? 'bg-rose-600 text-white border-rose-700' : 'bg-rose-50 text-rose-700 border-rose-200'}">
+              MIA
+            </button>
+            <button onclick="setCheckOutItemStatus('${item.id}', 'returned')" class="px-2 py-1 rounded-lg border text-[11px] leading-tight font-bold transition ${returned ? 'bg-sky-600 text-white border-sky-700' : 'bg-sky-50 text-sky-700 border-sky-200'}">
+              Returned
+            </button>
+            <button onclick="openCheckOutModal('edit', '${item.id}')" class="px-2 py-1 text-[11px] leading-tight font-semibold text-slate-700 bg-white border border-slate-200 rounded-lg flex items-center space-x-1">
+              <i data-lucide="edit-3" class="w-3 h-3"></i>
+              <span>Edit</span>
+            </button>
+          </div>
+        `;
+        mobileContainer.appendChild(card);
+      });
+    }
+
+    function handleRowPersonChange(itemId, selectEl) {
+      const val = selectEl.value;
+      if (val === '__ADD_NEW_PERSON__') {
+        promptAddNewTeamMember(null, itemId);
+        return;
+      }
+      const items = inventory[currentTab] || [];
+      const item = items.find(i => i.id === itemId);
+      if (!item) return;
+      const oldPerson = item.person;
+      item.person = val;
+      logAuditAction("Changed Check Out Person", `${item.name}: assigned from ${oldPerson || 'Unassigned'} to ${val}`);
+      saveData();
+      renderTable();
+      lucide.createIcons();
+      showToast(`Assigned to ${val}`);
+    }
+
+    function handleModalPersonSelectChange(selectEl) {
+      if (selectEl.value === '__ADD_NEW_PERSON__') {
+        promptAddNewTeamMember('coModalPerson');
+      }
+    }
+
+    function promptAddNewTeamMember(selectIdToUpdate = null, itemIdToAssign = null) {
+      openCustomDialog({
+        title: "Add Install Team Member",
+        message: "Enter the name of the person to add to your install team dropdown:",
+        showInput: true,
+        defaultValue: "",
+        confirmText: "Add Person",
+        onConfirm: (newName) => {
+          const trimmed = (newName || '').trim();
+          if (!trimmed) {
+            renderTable();
+            return;
+          }
+          if (!teamMembers.includes(trimmed)) {
+            teamMembers.push(trimmed);
+            logAuditAction("Added Team Member", `Added "${trimmed}" to Check Out person list`);
+          }
+          if (itemIdToAssign) {
+            const item = (inventory[currentTab] || []).find(i => i.id === itemIdToAssign);
+            if (item) {
+              item.person = trimmed;
+            }
+          }
+          saveData();
+          if (selectIdToUpdate) {
+            const sel = document.getElementById(selectIdToUpdate);
+            if (sel) {
+              sel.innerHTML = buildPersonSelectOptions(trimmed);
+              sel.value = trimmed;
+            }
+          }
+          renderAll();
+          showToast(`Added "${trimmed}" to team list`);
+        }
+      });
+    }
+
+    function updateCheckOutDate(itemId, field, value) {
+      const items = inventory[currentTab] || [];
+      const item = items.find(i => i.id === itemId);
+      if (!item) return;
+      item[field] = value;
+      logAuditAction(field === 'dueDate' ? "Updated Due Date" : "Updated Check Out Date", `${item.name} (${item.person}): set ${field} to ${value}`);
+      saveData();
+      renderTable();
+      renderTabs();
+      lucide.createIcons();
+    }
+
+    function setCheckOutItemStatus(itemId, targetStatus) {
+      const items = inventory[currentTab] || [];
+      const item = items.find(i => i.id === itemId);
+      if (!item) return;
+
+      // Toggle back to checked_out if clicking the already-active status button
+      if (item.status === targetStatus) {
+        item.status = 'checked_out';
+      } else {
+        item.status = targetStatus;
+      }
+
+      const statusLabel = item.status === 'mia' ? 'MIA (Red)' : item.status === 'returned' ? 'Returned (Blue)' : 'Checked Out';
+      logAuditAction("Updated Check Out Status", `${item.name} (${item.person}): marked as ${statusLabel}`);
+      saveData();
+      renderTable();
+      renderTabs();
+      lucide.createIcons();
+      showToast(`${item.name} marked as ${statusLabel}`);
+    }
+
+    function openCheckOutModal(mode, itemId = null) {
+      const modal = document.getElementById('checkOutItemModal');
+      const title = document.getElementById('checkOutModalTitle');
+      const delBtn = document.getElementById('coModalDeleteBtn');
+      const personSelect = document.getElementById('coModalPerson');
+
+      const todayISO = new Date().toISOString().split('T')[0];
+      const nextWeekDate = new Date();
+      nextWeekDate.setDate(nextWeekDate.getDate() + 7);
+      const nextWeekISO = nextWeekDate.toISOString().split('T')[0];
+
+      if (mode === 'create') {
+        title.innerHTML = `<i data-lucide="plus-circle" class="w-4 h-4 text-emerald-400"></i><span>Check Out Item</span>`;
+        document.getElementById('editCheckOutId').value = '';
+        const defaultPerson = teamMembers[0] || 'Kim';
+        personSelect.innerHTML = buildPersonSelectOptions(defaultPerson);
+        personSelect.value = defaultPerson;
+        document.getElementById('coModalItemName').value = '';
+        document.getElementById('coModalCheckoutDate').value = todayISO;
+        document.getElementById('coModalDueDate').value = nextWeekISO;
+        document.getElementById('coModalStatus').value = 'checked_out';
+        document.getElementById('coModalPhotoUrl').value = '';
+        document.getElementById('coModalNotes').value = '';
+        delBtn.classList.add('hidden');
+      } else {
+        const item = (inventory[currentTab] || []).find(i => i.id === itemId);
+        if (!item) return;
+        title.innerHTML = `<i data-lucide="edit-3" class="w-4 h-4 text-emerald-400"></i><span>Edit Checked Out Item</span>`;
+        document.getElementById('editCheckOutId').value = item.id;
+        personSelect.innerHTML = buildPersonSelectOptions(item.person || teamMembers[0]);
+        personSelect.value = item.person || teamMembers[0] || '';
+        document.getElementById('coModalItemName').value = item.name || '';
+        document.getElementById('coModalCheckoutDate').value = item.checkoutDate || todayISO;
+        document.getElementById('coModalDueDate').value = item.dueDate || nextWeekISO;
+        document.getElementById('coModalStatus').value = item.status || 'checked_out';
+        document.getElementById('coModalPhotoUrl').value = item.photo || '';
+        document.getElementById('coModalNotes').value = item.notes || '';
+        delBtn.classList.remove('hidden');
+      }
+
+      modal.classList.remove('hidden');
+      lucide.createIcons();
+    }
+
+    function closeCheckOutModal() {
+      document.getElementById('checkOutItemModal').classList.add('hidden');
+    }
+
+    function handleSaveCheckOutItem(e) {
+      e.preventDefault();
+      const id = document.getElementById('editCheckOutId').value;
+      let person = document.getElementById('coModalPerson').value;
+      if (person === '__ADD_NEW_PERSON__') {
+        person = teamMembers[0] || 'Kim';
+      }
+      const name = document.getElementById('coModalItemName').value.trim();
+      const checkoutDate = document.getElementById('coModalCheckoutDate').value;
+      const dueDate = document.getElementById('coModalDueDate').value;
+      const status = document.getElementById('coModalStatus').value;
+      const photo = document.getElementById('coModalPhotoUrl').value.trim();
+      const notes = document.getElementById('coModalNotes').value.trim();
+
+      if (!inventory[currentTab]) inventory[currentTab] = [];
+
+      if (!id) {
+        const newItem = {
+          id: 'co_' + Date.now(),
+          person,
+          name,
+          checkoutDate,
+          dueDate,
+          status,
+          photo,
+          notes,
+          dateAdded: Date.now()
+        };
+        inventory[currentTab].push(newItem);
+        logAuditAction("Checked Out Item", `${person} checked out "${name}" (Due: ${dueDate})`);
+      } else {
+        const currentItem = (inventory[currentTab] || []).find(i => i.id === id);
+        if (currentItem) {
+          Object.assign(currentItem, { person, name, checkoutDate, dueDate, status, photo, notes });
+          logAuditAction("Edited Check Out", `Updated check out record for "${name}" (${person})`);
+        }
+      }
+
+      saveData();
+      closeCheckOutModal();
+      renderAll();
+      showToast("Check out record saved");
+    }
+
+    function deleteCurrentCheckOutItem() {
+      const id = document.getElementById('editCheckOutId').value;
+      if (!id) return;
+      const item = (inventory[currentTab] || []).find(i => i.id === id);
+      openCustomDialog({
+        title: "Delete Check Out Entry",
+        message: `Are you sure you want to delete "${item ? item.name : 'this entry'}"?`,
+        confirmText: "Delete",
+        onConfirm: () => {
+          inventory[currentTab] = (inventory[currentTab] || []).filter(i => i.id !== id);
+          logAuditAction("Deleted Check Out Entry", `Removed "${item ? item.name : id}" from ${currentTab}`);
+          saveData();
+          closeCheckOutModal();
+          renderAll();
+          showToast("Check out entry deleted");
+        }
+      });
+    }
+
+    // ================= RESTOCK IN ROUTE & COMPLETION =================
+    function openRestockInRouteModal(itemId) {
+      const items = inventory[currentTab] || [];
+      const item = items.find(i => i.id === itemId);
+      if (!item) return;
+
+      document.getElementById('inRouteItemId').value = item.id;
+      document.getElementById('inRouteItemNameDisplay').textContent = item.name;
+      document.getElementById('inRouteCurrentStockDisplay').textContent = `Current Stock: ${item.remaining || 0} / Baseline: ${item.total || 0}`;
+
+      const clearBtn = document.getElementById('clearInRouteBtn');
+      const todayISO = new Date().toISOString().split('T')[0];
+
+      if (item.inRoute && item.inRoute.active) {
+        document.getElementById('inRouteQuantity').value = item.inRoute.quantity || '';
+        document.getElementById('inRouteOrderedDate').value = item.inRoute.dateOrdered || todayISO;
+        document.getElementById('inRouteDeliveryDate').value = item.inRoute.expectedDelivery || '';
+        document.getElementById('inRouteOrderNotes').value = item.inRoute.notes || '';
+        clearBtn.classList.remove('hidden');
+      } else {
+        const needed = Math.max(1, (Number(item.total) || 0) - (Number(item.remaining) || 0));
+        document.getElementById('inRouteQuantity').value = needed;
+        document.getElementById('inRouteOrderedDate').value = todayISO;
+        const defaultETA = new Date();
+        defaultETA.setDate(defaultETA.getDate() + 5);
+        document.getElementById('inRouteDeliveryDate').value = defaultETA.toISOString().split('T')[0];
+        document.getElementById('inRouteOrderNotes').value = '';
+        clearBtn.classList.add('hidden');
+      }
+
+      document.getElementById('restockInRouteModal').classList.remove('hidden');
+      lucide.createIcons();
+    }
+
+    function closeRestockInRouteModal() {
+      document.getElementById('restockInRouteModal').classList.add('hidden');
+    }
+
+    function handleSaveRestockInRoute(e) {
+      e.preventDefault();
+      const itemId = document.getElementById('inRouteItemId').value;
+      const items = inventory[currentTab] || [];
+      const item = items.find(i => i.id === itemId);
+      if (!item) return;
+
+      const quantity = Math.max(1, parseInt(document.getElementById('inRouteQuantity').value, 10) || 1);
+      const dateOrdered = document.getElementById('inRouteOrderedDate').value;
+      const expectedDelivery = document.getElementById('inRouteDeliveryDate').value;
+      const notes = document.getElementById('inRouteOrderNotes').value.trim();
+
+      item.inRoute = {
+        active: true,
+        quantity,
+        dateOrdered,
+        expectedDelivery,
+        notes
+      };
+
+      const etaFormatted = formatToMMDDYYYY(expectedDelivery);
+      logAuditAction("Restock In Route", `${item.name}: order of ${quantity} units marked in-route. Expected ETA ${etaFormatted}`);
+      saveData();
+      closeRestockInRouteModal();
+      renderAll();
+      showToast(`In-route restock logged (ETA: ${etaFormatted})`);
+    }
+
+    function clearActiveInRouteOrder() {
+      const itemId = document.getElementById('inRouteItemId').value;
+      const items = inventory[currentTab] || [];
+      const item = items.find(i => i.id === itemId);
+      if (!item) return;
+
+      openCustomDialog({
+        title: "Cancel In-Route Order",
+        message: `Cancel active in-route restock tracking for "${item.name}"?`,
+        confirmText: "Cancel Order",
+        onConfirm: () => {
+          item.inRoute = { active: false };
+          logAuditAction("Restock Order Cancelled", `${item.name}: removed in-route order status`);
+          saveData();
+          closeRestockInRouteModal();
+          renderAll();
+          showToast("In-route order cancelled");
+        }
+      });
+    }
+
+    function completeRestock(itemId) {
+      const items = inventory[currentTab] || [];
+      const item = items.find(i => i.id === itemId);
+      if (!item) return;
+
+      const prev = Number(item.remaining) || 0;
+      const baselineTotal = Number(item.total) || 1;
+
+      if (item.inRoute && item.inRoute.active) {
+        const orderedQty = Number(item.inRoute.quantity) || 0;
+        const etaDate = formatToMMDDYYYY(item.inRoute.expectedDelivery);
+        
+        const newStock = prev + orderedQty;
+        item.remaining = newStock;
+        if (newStock > baselineTotal) {
+          item.total = newStock;
+        }
+
+        item.inRoute = { active: false };
+        item.updated = new Date().toISOString().split('T')[0];
+
+        logAuditAction("Restock Completed", `${item.name}: received order of ${orderedQty} units (ETA was ${etaDate}). Stock updated from ${prev} to ${item.remaining}/${item.total}`);
+        showToast(`${item.name} restocked (+${orderedQty})`);
+        saveData();
+        renderTable();
+        renderTabs();
+        lucide.createIcons();
+      } else {
+        openCustomDialog({
+          title: "Restock Completed",
+          message: `Confirm Restock Completed for "${item.name}" to full capacity (${baselineTotal})?`,
+          confirmText: "Restock to 100%",
+          onConfirm: () => {
+            item.remaining = baselineTotal;
+            item.updated = new Date().toISOString().split('T')[0];
+            logAuditAction("Restock Completed", `${item.name}: restocked to full baseline (${baselineTotal}/${baselineTotal})`);
+            showToast(`${item.name} restocked to 100%`);
+            saveData();
+            renderTable();
+            renderTabs();
+            lucide.createIcons();
+          }
+        });
+      }
+    }
+
+    // ================= COUNTER STEPPER =================
+    function adjustCount(itemId, delta) {
+      const items = inventory[currentTab] || [];
+      const item = items.find(i => i.id === itemId);
+      if (!item) return;
+
+      const prev = Number(item.remaining) || 0;
+      let next = prev + delta;
+      if (next < 0) next = 0;
+      if (next > Number(item.total)) next = Number(item.total);
+
+      item.remaining = next;
+      item.updated = new Date().toISOString().split('T')[0];
+
+      logAuditAction("Updated Stock", `${item.name}: changed from ${prev} to ${next} (${next}/${item.total})`);
+      saveData();
+      renderTable();
+      renderTabs();
+      lucide.createIcons();
+    }
+
+    // ================= ITEM MODAL (ADD / EDIT) =================
+    function openItemModal(mode, itemId = null) {
+      if (isCheckOutTab(currentTab)) {
+        openCheckOutModal(mode, itemId);
+        return;
+      }
+      populateCategoryDropdown();
+      const modal = document.getElementById('itemModal');
+      const title = document.getElementById('itemModalTitle');
+      const delBtn = document.getElementById('modalDeleteBtn');
+
+      if (mode === 'create') {
+        title.innerHTML = `<i data-lucide="plus-circle" class="w-4 h-4 text-emerald-400"></i><span>Add New Item</span>`;
+        document.getElementById('editItemId').value = '';
+        document.getElementById('modalItemName').value = '';
+        document.getElementById('modalCategory').value = currentTab;
+        document.getElementById('modalLocation').value = '';
+        document.getElementById('modalRemaining').value = '25';
+        document.getElementById('modalTotal').value = '25';
+        document.getElementById('modalLowThreshold').value = '0.50';
+        document.getElementById('modalReorderThreshold').value = '0.25';
+        document.getElementById('modalLastUpdated').value = new Date().toISOString().split('T')[0];
+        document.getElementById('modalPhotoUrl').value = '';
+        document.getElementById('modalLocationPhotoUrl').value = '';
+        document.getElementById('modalNotes').value = '';
+        delBtn.classList.add('hidden');
+      } else {
+        const item = (inventory[currentTab] || []).find(i => i.id === itemId);
+        if (!item) return;
+        title.innerHTML = `<i data-lucide="edit-3" class="w-4 h-4 text-emerald-400"></i><span>Edit Inventory Item</span>`;
+        document.getElementById('editItemId').value = item.id;
+        document.getElementById('modalItemName').value = item.name || '';
+        document.getElementById('modalCategory').value = currentTab;
+        document.getElementById('modalLocation').value = item.location || '';
+        document.getElementById('modalRemaining').value = item.remaining;
+        document.getElementById('modalTotal').value = item.total;
+        document.getElementById('modalLowThreshold').value = item.lowThreshold || '0.50';
+        document.getElementById('modalReorderThreshold').value = item.reorderThreshold || item.threshold || '0.25';
+        document.getElementById('modalLastUpdated').value = item.updated || new Date().toISOString().split('T')[0];
+        document.getElementById('modalPhotoUrl').value = item.photo || '';
+        document.getElementById('modalLocationPhotoUrl').value = item.locationPhoto || '';
+        document.getElementById('modalNotes').value = item.notes || '';
+        delBtn.classList.remove('hidden');
+      }
+
+      modal.classList.remove('hidden');
+      lucide.createIcons();
+    }
+
+    function closeItemModal() {
+      document.getElementById('itemModal').classList.add('hidden');
+    }
+
+    function populateCategoryDropdown() {
+      const select = document.getElementById('modalCategory');
+      select.innerHTML = '';
+      Object.keys(inventory).forEach(tab => {
+        const opt = document.createElement('option');
+        opt.value = tab;
+        opt.textContent = tab;
+        select.appendChild(opt);
+      });
+    }
+
+    function handleSaveItem(e) {
+      e.preventDefault();
+      const id = document.getElementById('editItemId').value;
+      const targetCategory = document.getElementById('modalCategory').value;
+      const name = document.getElementById('modalItemName').value.trim();
+      const location = document.getElementById('modalLocation').value.trim();
+      const remaining = Number(document.getElementById('modalRemaining').value);
+      const total = Number(document.getElementById('modalTotal').value);
+      const lowThreshold = document.getElementById('modalLowThreshold').value;
+      const reorderThreshold = document.getElementById('modalReorderThreshold').value;
+      const updated = document.getElementById('modalLastUpdated').value;
+      const photo = document.getElementById('modalPhotoUrl').value.trim();
+      const locationPhoto = document.getElementById('modalLocationPhotoUrl').value.trim();
+      const notes = document.getElementById('modalNotes').value.trim();
+
+      if (!id) {
+        const newItem = {
+          id: 'item_' + Date.now(),
+          name, location, remaining, total, lowThreshold, reorderThreshold, updated, photo, locationPhoto, notes,
+          dateAdded: Date.now(),
+          inRoute: { active: false }
+        };
+        if (!inventory[targetCategory]) inventory[targetCategory] = [];
+        inventory[targetCategory].push(newItem);
+        logAuditAction("Created Item", `Added "${name}" to ${targetCategory}`);
+      } else {
+        let currentItem = (inventory[currentTab] || []).find(i => i.id === id);
+        if (targetCategory !== currentTab) {
+          inventory[currentTab] = (inventory[currentTab] || []).filter(i => i.id !== id);
+          if (!inventory[targetCategory]) inventory[targetCategory] = [];
+          inventory[targetCategory].push(currentItem);
+        }
+        Object.assign(currentItem, { name, location, remaining, total, lowThreshold, reorderThreshold, updated, photo, locationPhoto, notes });
+        logAuditAction("Edited Item", `Modified specifications for "${name}"`);
+      }
+
+      saveData();
+      closeItemModal();
+      renderAll();
+      showToast("Item saved successfully");
+    }
+
+    function deleteCurrentItem() {
+      const id = document.getElementById('editItemId').value;
+      if (!id) return;
+      const item = (inventory[currentTab] || []).find(i => i.id === id);
+      openCustomDialog({
+        title: "Delete Item",
+        message: `Are you sure you want to delete "${item ? item.name : 'this item'}"?`,
+        confirmText: "Delete",
+        onConfirm: () => {
+          inventory[currentTab] = (inventory[currentTab] || []).filter(i => i.id !== id);
+          logAuditAction("Deleted Item", `Removed "${item ? item.name : id}" from ${currentTab}`);
+          saveData();
+          closeItemModal();
+          renderAll();
+          showToast("Item removed");
+        }
+      });
+    }
+
+    // ================= AUDIT LOG =================
+    function openAuditModal() {
+      renderAuditLogs();
+      document.getElementById('auditModal').classList.remove('hidden');
+      lucide.createIcons();
+    }
+
+    function closeAuditModal() {
+      document.getElementById('auditModal').classList.add('hidden');
+    }
+
+    function renderAuditLogs() {
+      const container = document.getElementById('auditLogList');
+      const countBadge = document.getElementById('auditLogCount');
+      countBadge.textContent = auditLogs.length;
+
+      if (auditLogs.length === 0) {
+        container.innerHTML = `<p class="text-slate-400 text-center py-6">No edits recorded yet.</p>`;
+        return;
+      }
+
+      container.innerHTML = auditLogs.map(log => `
+        <div class="py-2 flex items-start justify-between gap-2">
+          <div class="space-y-0.5">
+            <div class="flex items-center space-x-1.5">
+              <span class="font-mono font-bold text-slate-800">${escapeHtml(log.user)}</span>
+              <span class="px-1.5 py-0.2 rounded text-[10px] bg-slate-100 font-semibold text-slate-600">${escapeHtml(log.action)}</span>
+              <span class="text-[10px] text-emerald-700 font-medium">[${escapeHtml(log.tab)}]</span>
+            </div>
+            <p class="text-slate-600 text-[11px]">${escapeHtml(log.details)}</p>
+          </div>
+          <span class="text-[10px] font-mono text-slate-400 whitespace-nowrap">${log.timestamp}</span>
+        </div>
+      `).join('');
+    }
+
+    function clearAuditLog() {
+      if (!currentUser || !currentUser.isAdmin) {
+        openCustomDialog({
+          title: "Permission Denied",
+          message: "Only Administrator (@kwilks) has permission to clear the version history.",
+          showCancel: false,
+          confirmText: "OK"
+        });
+        return;
+      }
+      openCustomDialog({
+        title: "Clear Audit History",
+        message: "Admin confirmation: Clear recent audit log history?",
+        confirmText: "Clear History",
+        onConfirm: () => {
+          auditLogs = [];
+          saveData();
+          renderAuditLogs();
+          showToast("Audit logs cleared");
+        }
+      });
+    }
+
+    // ================= EMAIL BACKUP =================
+    function openEmailSaveModal() {
+      const savedEmail = localStorage.getItem('LEVEL99_BACKUP_EMAIL') || (currentUser ? currentUser.email : '');
+      document.getElementById('backupDestinationEmail').value = savedEmail;
+      document.getElementById('emailBackupModal').classList.remove('hidden');
+      lucide.createIcons();
+    }
+
+    function closeEmailSaveModal() {
+      document.getElementById('emailBackupModal').classList.add('hidden');
+    }
+
+    function handleSaveOnlyWithoutEmail() {
+      saveData();
+      logAuditAction("Manual Save", "Saved database snapshot locally");
+      closeEmailSaveModal();
+      showToast("Inventory saved locally");
+    }
+
+    function handleSendBackupEmail() {
+      const email = document.getElementById('backupDestinationEmail').value.trim();
+      if (!email) {
+        showToast("Please enter a valid email address");
+        return;
+      }
+      localStorage.setItem('LEVEL99_BACKUP_EMAIL', email);
+      saveData();
+      logAuditAction("Exported Email Backup", `Sent snapshot to ${email}`);
+
+      let body = `Level99 Inventory Backup Summary - ${new Date().toLocaleDateString()}\n`;
+      body += `Authorized User: ${currentUser ? currentUser.handle : 'Install Team'}\n\n`;
+
+      Object.keys(inventory).forEach(tab => {
+        const items = inventory[tab] || [];
+        body += `=== ${tab.toUpperCase()} (${items.length} Items) ===\n`;
+        items.forEach(it => {
+          if (isCheckOutTab(tab)) {
+            const st = isCheckOutMia(it) ? 'MIA' : isCheckOutReturned(it) ? 'RETURNED' : isCheckOutOverdue(it) ? 'OVERDUE' : 'CHECKED OUT';
+            body += `• ${it.name} | Person: ${it.person || 'N/A'} | Checked Out: ${it.checkoutDate || 'N/A'} | Due: ${it.dueDate || 'N/A'} | Status: ${st}\n`;
+          } else {
+            body += `• ${it.name} | Stock: ${it.remaining}/${it.total} | Bin: ${it.location || 'N/A'}\n`;
+          }
+        });
+        body += `\n`;
+      });
+
+      const mailtoUrl = `mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent("Level99 Inventory Backup - " + sheetTitle)}&body=${encodeURIComponent(body)}`;
+      window.location.href = mailtoUrl;
+      closeEmailSaveModal();
+    }
+
+    // ================= EXPORT GOOGLE DOC & PDF =================
+    function openExportModal() {
+      populateExportTabsList();
+      renderTabRowLimitConfigs();
+      updateExportPreview();
+      document.getElementById('exportModal').classList.remove('hidden');
+      lucide.createIcons();
+    }
+
+    function closeExportModal() {
+      document.getElementById('exportModal').classList.add('hidden');
+    }
+
+    function populateExportTabsList() {
+      const container = document.getElementById('exportTabsSelectionList');
+      container.innerHTML = '';
+      Object.keys(inventory).forEach((tab) => {
+        const label = document.createElement('label');
+        label.className = "flex items-center space-x-1.5 cursor-pointer font-medium text-slate-700";
+        label.innerHTML = `
+          <input type="checkbox" value="${escapeAttr(tab)}" checked class="export-tab-cb rounded text-emerald-600" onchange="handleExportTabToggle()">
+          <span>${escapeHtml(tab)}</span>
+        `;
+        container.appendChild(label);
+      });
+    }
+
+    function toggleAllExportTabs(state) {
+      document.querySelectorAll('.export-tab-cb').forEach(cb => cb.checked = state);
+      handleExportTabToggle();
+    }
+
+    function handleExportTabToggle() {
+      renderTabRowLimitConfigs();
+      updateExportPreview();
+    }
+
+    function renderTabRowLimitConfigs() {
+      const container = document.getElementById('tabRowLimitsContainer');
+      const selectedTabs = Array.from(document.querySelectorAll('.export-tab-cb:checked')).map(cb => cb.value);
+      container.innerHTML = '';
+
+      if (selectedTabs.length === 0) {
+        container.innerHTML = `<p class="text-slate-400 text-xs italic">Select at least one tab in Step 1.</p>`;
+        return;
+      }
+
+      const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+      selectedTabs.forEach((tab, index) => {
+        const letter = letters[index % letters.length];
+        const tabKey = escapeId(tab);
+        const card = document.createElement('div');
+        card.className = "flex flex-col sm:flex-row sm:items-center justify-between p-2 rounded-lg bg-white border border-slate-200 gap-2";
+        card.innerHTML = `
+          <div class="flex items-center space-x-1.5">
+            <span class="w-5 h-5 rounded-full bg-emerald-100 text-emerald-800 font-bold text-[11px] flex items-center justify-center shrink-0">3${letter}</span>
+            <span class="font-semibold text-slate-800 text-xs">${escapeHtml(tab)}</span>
+            <span class="text-[10px] text-slate-400">(${inventory[tab] ? inventory[tab].length : 0} items)</span>
+          </div>
+          <div class="flex items-center space-x-2">
+            <select id="exportRowLimit_${tabKey}" onchange="updateExportPreview()" class="text-xs bg-slate-50 border border-slate-200 rounded px-2 py-1 font-medium">
+              <option value="all">All Rows</option>
+              <option value="5">Top 5 Rows</option>
+              <option value="10">Top 10 Rows</option>
+              <option value="custom">Custom Range (e.g. 1, 3-5)</option>
+            </select>
+            <input 
+              type="text" 
+              id="exportRowRange_${tabKey}" 
+              placeholder="e.g. 1, 3, 5-8" 
+              oninput="updateExportPreview()" 
+              class="hidden w-28 px-2 py-1 text-xs border border-slate-300 rounded focus:outline-none" 
+            />
+          </div>
+        `;
+        container.appendChild(card);
+
+        const select = card.querySelector(`#exportRowLimit_${tabKey}`);
+        const input = card.querySelector(`#exportRowRange_${tabKey}`);
+        if (select && input) {
+          select.addEventListener('change', () => {
+            if (select.value === 'custom') input.classList.remove('hidden');
+            else input.classList.add('hidden');
+          });
+        }
+      });
+    }
+
+    function parseRowRange(rangeStr, maxLen) {
+      if (!rangeStr || !rangeStr.trim()) return Array.from({ length: maxLen }, (_, i) => i);
+      const indices = new Set();
+      const parts = rangeStr.split(',');
+      parts.forEach(part => {
+        const p = part.trim();
+        if (p.includes('-')) {
+          const [start, end] = p.split('-').map(n => parseInt(n.trim()));
+          if (!isNaN(start) && !isNaN(end)) {
+            for (let i = Math.min(start, end); i <= Math.max(start, end); i++) {
+              if (i >= 1 && i <= maxLen) indices.add(i - 1);
+            }
+          }
+        } else {
+          const num = parseInt(p);
+          if (!isNaN(num) && num >= 1 && num <= maxLen) indices.add(num - 1);
+        }
+      });
+      return Array.from(indices).sort((a, b) => a - b);
+    }
+
+    function generateReportHTML() {
+      const selectedTabs = Array.from(document.querySelectorAll('.export-tab-cb:checked')).map(cb => cb.value);
+      const incItem = document.getElementById('expColItem').checked;
+      const incStock = document.getElementById('expColStock').checked;
+      const incLoc = document.getElementById('expColLocation').checked;
+      const incNotes = document.getElementById('expColNotes').checked;
+      const incUpdated = document.getElementById('expColUpdated').checked;
+
+      let html = `<div style="font-family: Arial, sans-serif; color: #1e293b; max-width: 800px; margin: 0 auto; line-height: 1.4;">`;
+      html += `<div style="margin-bottom: 20px; border-bottom: 2px solid #0f172a; padding-bottom: 8px;">
+        <h1 style="font-size: 18px; font-weight: bold; margin: 0; text-transform: uppercase;">${escapeHtml(sheetTitle)} - [${new Date().toLocaleDateString()}]</h1>
+        <p style="font-size: 12px; color: #64748b; margin: 2px 0 0 0;">Authorized Install Operations Report</p>
+      </div>`;
+
+      if (selectedTabs.length === 0) {
+        html += `<p style="color: #94a3b8; font-style: italic;">No tabs selected for export.</p></div>`;
+        return html;
+      }
+
+      selectedTabs.forEach(tab => {
+        const rawItems = inventory[tab] || [];
+        const tabKey = escapeId(tab);
+        const limitSelect = document.getElementById(`exportRowLimit_${tabKey}`);
+        const rangeInput = document.getElementById(`exportRowRange_${tabKey}`);
+        const limitMode = limitSelect ? limitSelect.value : 'all';
+
+        let filteredItems = rawItems;
+        if (limitMode === '5') filteredItems = rawItems.slice(0, 5);
+        else if (limitMode === '10') filteredItems = rawItems.slice(0, 10);
+        else if (limitMode === 'custom' && rangeInput) {
+          const indices = parseRowRange(rangeInput.value, rawItems.length);
+          filteredItems = indices.map(idx => rawItems[idx]).filter(Boolean);
+        }
+
+        html += `<div style="margin-bottom: 24px;">`;
+        html += `<h2 style="font-size: 14px; font-weight: bold; margin: 0 0 8px 0; text-transform: uppercase; color: #0f172a;">***${escapeHtml(tab.toUpperCase())}***</h2>`;
+        html += `<table style="width: 100%; border-collapse: collapse; font-size: 11px; border: 1px solid #cbd5e1;">`;
+        html += `<thead><tr style="background-color: #f1f5f9; border-bottom: 1px solid #cbd5e1;">`;
+        if (incItem) html += `<th style="padding: 6px 8px; text-align: left; font-weight: bold; border-right: 1px solid #cbd5e1;">ITEM</th>`;
+        if (incStock) html += `<th style="padding: 6px 8px; text-align: left; font-weight: bold; border-right: 1px solid #cbd5e1;">STOCK LEVEL</th>`;
+        if (incLoc) html += `<th style="padding: 6px 8px; text-align: left; font-weight: bold; border-right: 1px solid #cbd5e1;">LOCATION</th>`;
+        if (incNotes) html += `<th style="padding: 6px 8px; text-align: left; font-weight: bold; border-right: 1px solid #cbd5e1;">NOTES</th>`;
+        if (incUpdated) html += `<th style="padding: 6px 8px; text-align: left; font-weight: bold;">LAST UPDATED</th>`;
+        html += `</tr></thead><tbody>`;
+
+        if (filteredItems.length === 0) {
+          html += `<tr><td colspan="5" style="padding: 8px; text-align: center; color: #94a3b8; font-style: italic;">No items matching selection</td></tr>`;
+        } else {
+          filteredItems.forEach((it, rIdx) => {
+            const bg = (rIdx % 2 === 1) ? '#f8fafc' : '#ffffff';
+            if (isCheckOutTab(tab)) {
+              const st = isCheckOutMia(it) ? 'MIA' : isCheckOutReturned(it) ? 'RETURNED' : isCheckOutOverdue(it) ? 'OVERDUE' : 'CHECKED OUT';
+              html += `<tr style="background-color: ${bg}; border-bottom: 1px solid #e2e8f0;">`;
+              if (incItem) html += `<td style="padding: 6px 8px; font-weight: 600; border-right: 1px solid #cbd5e1;">${escapeHtml(it.name)}</td>`;
+              if (incStock) html += `<td style="padding: 6px 8px; border-right: 1px solid #cbd5e1; font-family: monospace;">${st} (Due: ${escapeHtml(it.dueDate || '—')})</td>`;
+              if (incLoc) html += `<td style="padding: 6px 8px; border-right: 1px solid #cbd5e1;">Person: ${escapeHtml(it.person || '—')}</td>`;
+              if (incNotes) html += `<td style="padding: 6px 8px; border-right: 1px solid #cbd5e1;">${escapeHtml(it.notes || '—')}</td>`;
+              if (incUpdated) html += `<td style="padding: 6px 8px; font-family: monospace;">Out: ${escapeHtml(it.checkoutDate || '—')}</td>`;
+              html += `</tr>`;
+            } else {
+              const rem = Number(it.remaining) || 0;
+              const tot = Number(it.total) || 1;
+              const pct = Math.round((rem / tot) * 100);
+              const isOos = rem === 0;
+
+              html += `<tr style="background-color: ${bg}; border-bottom: 1px solid #e2e8f0;">`;
+              if (incItem) html += `<td style="padding: 6px 8px; font-weight: 600; border-right: 1px solid #cbd5e1;">${escapeHtml(it.name)}</td>`;
+              if (incStock) html += `<td style="padding: 6px 8px; border-right: 1px solid #cbd5e1; font-family: monospace;">${pct}% (${rem} of ${tot}) ${isOos ? '<b>[OOS]</b>' : ''}</td>`;
+              if (incLoc) html += `<td style="padding: 6px 8px; border-right: 1px solid #cbd5e1;">${escapeHtml(it.location || '—')}</td>`;
+              if (incNotes) html += `<td style="padding: 6px 8px; border-right: 1px solid #cbd5e1;">${escapeHtml(it.notes || '—')}</td>`;
+              if (incUpdated) html += `<td style="padding: 6px 8px; font-family: monospace;">${escapeHtml(it.updated || '—')}</td>`;
+              html += `</tr>`;
+            }
+          });
+        }
+
+        html += `</tbody></table></div>`;
+      });
+
+      html += `</div>`;
+      return html;
+    }
+
+    function updateExportPreview() {
+      const container = document.getElementById('docPreviewContainer');
+      if (container) {
+        container.innerHTML = generateReportHTML();
+      }
+    }
+
+    function resetAndRegenerateReportPreview() {
+      updateExportPreview();
+      showToast("Report preview rebuilt from current settings");
+      lucide.createIcons();
+    }
+
+    function copyDocReportToClipboard() {
+      const previewEl = document.getElementById('docPreviewContainer');
+      const html = previewEl ? previewEl.innerHTML : generateReportHTML();
+      const el = document.createElement('div');
+      el.innerHTML = html;
+      el.style.position = 'fixed';
+      el.style.pointerEvents = 'none';
+      el.style.opacity = '0';
+      document.body.appendChild(el);
+      const range = document.createRange();
+      range.selectNode(el);
+      window.getSelection().removeAllRanges();
+      window.getSelection().addRange(range);
+      try {
+        document.execCommand('copy');
+        showToast("Report copied for Google Docs with your edits!");
+      } catch (err) {
+        showToast("Copy command failed. Please select text manually.");
+      }
+      document.body.removeChild(el);
+    }
+
+    function printReport() {
+      const previewEl = document.getElementById('docPreviewContainer');
+      const content = previewEl ? previewEl.innerHTML : generateReportHTML();
+      const printWindow = window.open('', '_blank');
+      if (printWindow) {
+        printWindow.document.write(`<html><head><title>${escapeHtml(sheetTitle)} Report</title></head><body style="padding:20px;">${content}</body></html>`);
+        printWindow.document.close();
+        printWindow.focus();
+        setTimeout(() => {
+          printWindow.print();
+          printWindow.close();
+        }, 350);
+      }
+    }
+
+    // ================= BACKUP & RESTORE =================
+    function openBackupModal() {
+      document.getElementById('backupManagerModal').classList.remove('hidden');
+      lucide.createIcons();
+    }
+
+    function closeBackupModal() {
+      document.getElementById('backupManagerModal').classList.add('hidden');
+    }
+
+    function downloadJsonBackup() {
+      const payload = {
+        title: sheetTitle,
+        columns: columns,
+        checkOutColumns: checkOutColumns,
+        teamMembers: teamMembers,
+        colWidths: colWidths,
+        inventory: inventory,
+        auditLogs: auditLogs,
+        exportedAt: new Date().toISOString(),
+        version: "3.3"
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `level99_inventory_${new Date().toISOString().split('T')[0]}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      logAuditAction("Backup Downloaded", "Full JSON database snapshot exported");
+      showToast("Backup downloaded");
+    }
+
+    function importJsonBackup(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function(evt) {
+        try {
+          const data = JSON.parse(evt.target.result);
+          if (data && data.inventory) {
+            openCustomDialog({
+              title: "Restore Backup",
+              message: "Restore this backup? This will replace current items with the file contents.",
+              confirmText: "Restore",
+              onConfirm: () => {
+                inventory = data.inventory;
+                if (!inventory["Check Out"]) {
+                  inventory["Check Out"] = JSON.parse(JSON.stringify(DEFAULT_CHECKOUT_SEED));
+                }
+                if (data.columns) columns = data.columns;
+                if (data.checkOutColumns) checkOutColumns = data.checkOutColumns;
+                if (data.teamMembers) teamMembers = data.teamMembers;
+                if (data.colWidths) colWidths = data.colWidths;
+                if (data.title) sheetTitle = data.title;
+                if (data.auditLogs) auditLogs = data.auditLogs;
+                saveData();
+                renderAll();
+                closeBackupModal();
+                showToast("Backup restored successfully");
+              }
+            });
+          } else {
+            showToast("Invalid backup file structure.");
+          }
+        } catch (err) {
+          showToast("Error parsing backup: " + err.message);
+        }
+      };
+      reader.readAsText(file);
+    }
+
+    // ================= TAB MANAGEMENT =================
+    function openTabModal(mode, tabName = '') {
+      document.getElementById('tabModalMode').value = mode;
+      document.getElementById('tabModalOriginalName').value = tabName;
+      document.getElementById('tabModalTitle').textContent = mode === 'create' ? 'Create New Category Tab' : `Manage "${tabName}"`;
+      document.getElementById('tabModalInput').value = mode === 'create' ? '' : tabName;
+      
+      const delBtn = document.getElementById('deleteTabBtn');
+      if (mode === 'rename' && Object.keys(inventory).length > 1) {
+        delBtn.classList.remove('hidden');
+      } else {
+        delBtn.classList.add('hidden');
+      }
+      
+      document.getElementById('tabModal').classList.remove('hidden');
+    }
+
+    function closeTabModal() {
+      document.getElementById('tabModal').classList.add('hidden');
+    }
+
+    function deleteCurrentTab() {
+      if (!currentUser || !currentUser.isAdmin) {
+        openCustomDialog({
+          title: "Permission Denied",
+          message: "Only Administrator (@kwilks) has permission to delete inventory tabs.",
+          showCancel: false,
+          confirmText: "OK"
+        });
+        return;
+      }
+      const target = document.getElementById('tabModalOriginalName').value;
+      if (!target) return;
+      openCustomDialog({
+        title: "Delete Tab",
+        message: `Admin confirmation: Are you sure you want to permanently delete "${target}" and all its items?`,
+        confirmText: "Delete Tab",
+        onConfirm: () => {
+          delete inventory[target];
+          currentTab = Object.keys(inventory)[0] || '';
+          logAuditAction("Deleted Tab", `Tab [${target}] was deleted by Admin`);
+          saveData();
+          closeTabModal();
+          renderAll();
+          showToast(`Tab ${target} deleted`);
+        }
+      });
+    }
+
+    function saveTabModal() {
+      const mode = document.getElementById('tabModalMode').value;
+      const original = document.getElementById('tabModalOriginalName').value;
+      const name = document.getElementById('tabModalInput').value.trim();
+      if (!name) return;
+
+      if (mode === 'create') {
+        if (inventory[name]) {
+          showToast("A tab with this name already exists.");
+          return;
+        }
+        inventory[name] = [];
+        currentTab = name;
+        logAuditAction("Created Tab", `Added tab [${name}]`);
+      } else {
+        if (name !== original) {
+          inventory[name] = inventory[original] || [];
+          delete inventory[original];
+          if (currentTab === original) currentTab = name;
+          logAuditAction("Renamed Tab", `Renamed [${original}] to [${name}]`);
+        }
+      }
+
+      saveData();
+      closeTabModal();
+      renderAll();
+      showToast(`Tab saved`);
+    }
+
+    // ================= COLUMN SETTINGS =================
+    function openColumnSettingsModal() {
+      renderColumnSettingsList();
+      document.getElementById('columnSettingsModal').classList.remove('hidden');
+      lucide.createIcons();
+    }
+
+    function closeColumnSettingsModal() {
+      document.getElementById('columnSettingsModal').classList.add('hidden');
+    }
+
+    function renderColumnSettingsList() {
+      const container = document.getElementById('columnListContainer');
+      container.innerHTML = '';
+      const activeCols = getActiveColumns();
+      activeCols.forEach((col, idx) => {
+        const item = document.createElement('div');
+        item.className = "flex items-center justify-between p-2 rounded-lg bg-slate-50 border border-slate-200";
+        item.innerHTML = `
+          <div class="flex items-center space-x-2">
+            <input type="checkbox" ${col.visible ? 'checked' : ''} onchange="toggleColumnVisibility(${idx})" class="rounded text-emerald-600" />
+            <input type="text" value="${escapeAttr(col.label)}" onchange="renameColumn(${idx}, this.value)" class="text-xs font-semibold bg-transparent border-b border-transparent hover:border-slate-300 focus:border-emerald-500 focus:outline-none" />
+          </div>
+          <div class="flex items-center space-x-1">
+            <button onclick="moveColumn(${idx}, -1)" ${idx === 0 ? 'disabled class="opacity-30"' : ''} class="p-1 hover:bg-slate-200 rounded"><i data-lucide="chevron-up" class="w-3.5 h-3.5"></i></button>
+            <button onclick="moveColumn(${idx}, 1)" ${idx === activeCols.length - 1 ? 'disabled class="opacity-30"' : ''} class="p-1 hover:bg-slate-200 rounded"><i data-lucide="chevron-down" class="w-3.5 h-3.5"></i></button>
+          </div>
+        `;
+        container.appendChild(item);
+      });
+    }
+
+    function toggleColumnVisibility(idx) {
+      const activeCols = getActiveColumns();
+      activeCols[idx].visible = !activeCols[idx].visible;
+      saveData();
+      renderTableColgroup();
+      renderTableHeader();
+      renderTable();
+      renderWidthSlidersList();
+    }
+
+    function renameColumn(idx, newLabel) {
+      const activeCols = getActiveColumns();
+      if (newLabel.trim()) {
+        activeCols[idx].label = newLabel.trim();
+        saveData();
+        renderTableHeader();
+        renderWidthSlidersList();
+      }
+    }
+
+    function moveColumn(idx, dir) {
+      const activeCols = getActiveColumns();
+      const target = idx + dir;
+      if (target < 0 || target >= activeCols.length) return;
+      const temp = activeCols[idx];
+      activeCols[idx] = activeCols[target];
+      activeCols[target] = temp;
+      saveData();
+      renderColumnSettingsList();
+      renderTableColgroup();
+      renderTableHeader();
+      renderTable();
+      renderWidthSlidersList();
+      lucide.createIcons();
+    }
+
+    // ================= LIGHTBOX & UPLOAD =================
+    function openLightbox(src, caption) {
+      document.getElementById('lightboxImg').src = src;
+      document.getElementById('lightboxCaption').textContent = caption || '';
+      document.getElementById('photoLightbox').classList.remove('hidden');
+      lucide.createIcons();
+    }
+
+    function closeLightbox() {
+      document.getElementById('photoLightbox').classList.add('hidden');
+    }
+
+    function handleFileUpload(e, targetInputId) {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function(evt) {
+        document.getElementById(targetInputId).value = evt.target.result;
+      };
+      reader.readAsDataURL(file);
+    }
+
+    // ================= TOOLBAR FILTER CONTROLS =================
+    function handleSearch(val) {
+      searchQuery = val.trim();
+      renderTable();
+      lucide.createIcons();
+    }
+
+    function changeSort(val) {
+      currentSort = val;
+      renderTable();
+      lucide.createIcons();
+    }
+
+    function toggleLowStockFilter() {
+      filterLowStockOnly = !filterLowStockOnly;
+      const btn = document.getElementById('filterLowStockBtn');
+      const text = document.getElementById('lowStockBtnText');
+      if (filterLowStockOnly) {
+        btn.className = "flex-1 sm:flex-none justify-center flex items-center space-x-1 px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-amber-500 text-white shadow-xs transition";
+        text.textContent = "Showing Low Stock";
+      } else {
+        btn.className = "flex-1 sm:flex-none justify-center flex items-center space-x-1 px-2.5 py-1.5 text-xs font-medium rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 transition";
+        text.textContent = "Low Stock Only";
+      }
+      renderTable();
+      lucide.createIcons();
+    }
+
+    function toggleHideNeverOos() {
+      hideNeverOos = !hideNeverOos;
+      const btn = document.getElementById('hideNeverOosBtn');
+      const text = document.getElementById('hideNeverOosText');
+      const mobileText = document.getElementById('mobileHideNeverOosText');
+      const label = hideNeverOos ? "Hiding Non-Restock OOS" : "Hide Non-Restock OOS";
+
+      if (text) text.textContent = label;
+      if (mobileText) mobileText.textContent = label;
+
+      if (btn) {
+        if (hideNeverOos) {
+          btn.className = "flex items-center space-x-1 px-2 py-1.5 text-xs font-semibold bg-sky-600 text-white rounded-lg transition shadow-xs";
+        } else {
+          btn.className = "flex items-center space-x-1 px-2 py-1.5 text-xs font-medium bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-lg transition";
+        }
+      }
+      renderTable();
+      lucide.createIcons();
+    }
+
+    function toggleNotesColumn() {
+      hideNotes = !hideNotes;
+      const text = document.getElementById('toggleNotesText');
+      if (text) text.textContent = hideNotes ? "Show Notes" : "Hide Notes";
+      renderTableHeader();
+      renderTable();
+      renderTableColgroup();
+      lucide.createIcons();
+    }
+
+    function toggleMobileToolsMenu() {
+      const menu = document.getElementById('mobileToolsMenu');
+      if (menu) menu.classList.toggle('hidden');
+    }
+
+    // Sanitization utilities
+    function escapeHtml(str) {
+      return (str || '').toString().replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function escapeAttr(str) {
+      return (str || '').toString().replace(/["'\\]/g, '');
+    }
+
+    function escapeId(str) {
+      return (str || '').toString().replace(/[^a-zA-Z0-9]/g, '_');
+    }
+  </script>
+
+</body>
+</html>
